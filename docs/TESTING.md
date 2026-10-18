@@ -52,7 +52,7 @@ and restoring the real Claude window after a take.
       If it says **CLAUDE / BACKGROUND**, open Claude fully, then restart Murmur
       or click **Open Claude** and try calibration again.
 - [ ] Keep Notepad open to paste the clipboard.
-- [ ] Optional: the logs are at `%LOCALAPPDATA%\Murmur\murmur.log`.
+- [ ] Optional: the logs are at `release\Murmur\data\murmur.log`.
 
 If the setup screen says **Ctrl+Space unavailable**, open Settings and select
 **Ctrl+Alt+Space**, then use that shortcut everywhere below.
@@ -62,18 +62,19 @@ If the setup screen says **Ctrl+Space unavailable**, open Settings and select
 ## 1. Calibration (must pass)
 
 - [ ] Click **Calibrate Claude**.
-- [ ] Claude should come forward and Murmur should shrink to the calibration card.
+- [ ] Murmur should shrink to the small calibration card. **Claude is not moved.**
+      If Claude is behind Murmur or on another monitor, click Claude once to
+      bring it forward; the card stays on top and does not steal focus back.
 - [ ] Hover the **centre of Claude’s mic button**, then press **F8**.
       Do not click. The card should move to “Step 2 of 2”.
 - [ ] Hover the **centre of Claude’s composer text area**, then press **F8**.
-- [ ] The card should close. Claude should return to its previous
-      minimized/visible state and Murmur should show **Idle**.
+- [ ] The card should close and Murmur should show **Idle**. Claude should be
+      untouched and still on its original monitor.
 - [ ] Open Settings and note the two calibration percentages.
 
-**If Claude never appears:** close the card, open Claude manually so its window
-is visible, restart Murmur, and retry. If it still fails, send me the log and a
-screenshot of the error. This is the known ghost-window limitation, not a
-calibration crash.
+**If the card does not appear:** close it, send me the log, and don’t retry
+blindly. This build is read-only during calibration; it does not need to move
+Claude. If Claude is not visible at all, open it from the taskbar first.
 
 ---
 
@@ -187,7 +188,8 @@ Please include:
 
 1. Which test number failed.
 2. A screenshot of the Murmur state.
-3. The last ~40 lines of `%LOCALAPPDATA%\Murmur\murmur.log`.
+3. The last ~40 lines of `release\Murmur\data\murmur.log` (or the AppData
+   fallback if that folder is not writable).
 4. Whether Claude was visible, minimized, or tray-hidden at the time.
 5. The two calibration percentages from Settings.
 6. The exact error text.

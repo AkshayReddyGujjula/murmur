@@ -35,7 +35,9 @@ Status: implemented and packaged. This supersedes the earlier D2D/Electron propo
   guaranteed low memory on GPU-less machines is required.
 - The only helper is the tiny C# Win32 bridge. It is spawned for a take and
   exits; it is not a resident process.
-- All app state lives in `%APPDATA%\Murmur`; logs in `%LOCALAPPDATA%\Murmur`.
+- All app state, logs, and bridge restore state live in the portable
+  `data` folder next to `Murmur.exe`; AppData is only a fallback when that
+  folder is not writable.
 
 ## Why these choices
 

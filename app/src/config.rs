@@ -133,6 +133,37 @@ pub fn local_dir() -> PathBuf {
     base.join("Murmur")
 }
 
+/// Prefer a portable `data` folder next to the executable. This keeps Murmur
+/// usable when it is launched under a restricted token that cannot write to
+/// AppData (and keeps a copied portable build self-contained). Explicit
+/// `MURMUR_DATA_DIR` / `MURMUR_LOCAL_DIR` overrides still win.
+pub fn init_portable_data() {
+    if std::env::var_os("MURMUR_DATA_DIR").is_some()
+        || std::env::var_os("MURMUR_LOCAL_DIR").is_some()
+    {
+        return;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let Some(parent) = exe.parent() else {
+        return;
+    };
+    let data = parent.join("data");
+    if fs::create_dir_all(&data).is_err() {
+        return;
+    }
+    let probe = data.join(".write-test");
+    if fs::write(&probe, b"ok").is_err() {
+        return;
+    }
+    let _ = fs::remove_file(&probe);
+    unsafe {
+        std::env::set_var("MURMUR_DATA_DIR", &data);
+        std::env::set_var("MURMUR_LOCAL_DIR", &data);
+    }
+}
+
 pub fn config_path() -> PathBuf {
     app_dir().join("config.json")
 }

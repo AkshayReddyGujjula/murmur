@@ -19,6 +19,7 @@ fn main() -> eframe::Result<()> {
         }
     }
 
+    config::init_portable_data();
     let _ = config::ensure_local_dir();
     let arguments: Vec<String> = std::env::args().collect();
     let start_hidden = arguments.iter().any(|argument| argument == "--hidden");

@@ -315,7 +315,7 @@ impl MurmurApp {
             (
                 "02",
                 "Point us at the mic",
-                "Hover Claude's mic and composer. Press F8. Nothing is clicked during setup.",
+                "Bring Claude forward, then hover its mic and composer. Press F8. Nothing is clicked.",
             ),
             (
                 "03",
@@ -1291,8 +1291,8 @@ impl MurmurApp {
                 "Now point to the composer where your prompt appears, then press F8.",
             ),
             CalibrationStage::Preparing => (
-                "Bringing Claude forward…",
-                "Murmur is finding Claude's window. This only takes a moment.",
+                "Finding Claude…",
+                "Murmur is reading Claude's window. This only takes a moment.",
             ),
         };
         theme::text(
@@ -1348,7 +1348,7 @@ impl MurmurApp {
         let message = calibration
             .message
             .clone()
-            .unwrap_or_else(|| "Nothing is clicked during calibration.".to_owned());
+            .unwrap_or_else(|| "Bring Claude forward, then hover the point. Nothing is clicked.".to_owned());
         theme::text(
             &painter,
             pos2(rect.left() + 20.0, rect.top() + 153.0),

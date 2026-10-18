@@ -182,15 +182,20 @@ only runs the read-only `FIND` command.
 
 ## Configuration and logs
 
-- Config: `%APPDATA%\Murmur\config.json`
-- Logs: `%LOCALAPPDATA%\Murmur\murmur.log`
-- Bridge recovery state: `%LOCALAPPDATA%\Murmur\restore-state.txt`
+- Config, logs, and bridge recovery state live in the portable **`data`** folder
+  next to `Murmur.exe`:
+  - `release\Murmur\data\config.json`
+  - `release\Murmur\data\murmur.log`
+  - `release\Murmur\data\restore-state.txt`
+- This keeps Murmur usable when it is launched from a restricted/sandboxed shell
+  that cannot write to AppData. If the `data` folder is not writable, Murmur
+  falls back to its AppData locations.
 - `MURMUR_DATA_DIR` overrides the config folder; `MURMUR_LOCAL_DIR` overrides
   the log and bridge-state folder (used by previews and tests).
 - The bridge and app use the same restore file, so a bridge crash can be recovered
   from the Murmur settings screen without closing Claude.
 
-Settings Ã¢â€ â€™ **Restore Claude** asks the bridge to restore the last saved window
+Settings → **Restore Claude** asks the bridge to restore the last saved window
 placement. **Open logs** opens the log folder.
 
 ## Privacy

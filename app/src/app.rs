@@ -760,7 +760,10 @@ impl MurmurApp {
         if self.phase == Phase::Listening {
             self.cancel_session(ctx, false);
         }
-        self.hide_window(ctx);
+        // Read-only calibration: do not hide/activate anything. The card is
+        // small, topmost and no-activate; the user can click Claude behind it
+        // and hover the two points. This avoids both the restore-state write
+        // and Windows' foreground-lock refusal.
         self.calibration = Some(CalibrationState {
             stage: CalibrationStage::Preparing,
             window: None,
@@ -778,9 +781,14 @@ impl MurmurApp {
         thread::spawn(move || {
             let result = (|| -> Result<(WindowInfo, isize)> {
                 let mut helper = HelperSession::start()?;
-                let (window, previous) = helper.focus()?;
+                let window = helper
+                    .find()?
+                    .ok_or_else(|| anyhow!("Claude's window was not found. Open Claude and try again."))?;
+                if !window.visible {
+                    bail!("Claude is running in the background. Open it from the taskbar, then calibrate.");
+                }
                 helper.quit();
-                Ok((window, previous))
+                Ok((window, 0))
             })();
             match result {
                 Ok((window, previous)) => {
@@ -788,7 +796,7 @@ impl MurmurApp {
                 }
                 Err(error) => {
                     let _ = tx.send(AppEvent::CalibrationFailed(format!(
-                        "Could not bring Claude forward: {error}"
+                        "Could not read Claude's window: {error}"
                     )));
                 }
             }
@@ -862,7 +870,7 @@ impl MurmurApp {
                     self.notice =
                         Some("Calibration saved. Press the hotkey and start talking.".to_owned());
                     self.restore_previous(ctx, previous);
-                    self.show_window(ctx, true);
+                    self.show_window(ctx, false);
                 }
             }
             CalibrationStage::Preparing => {}
@@ -880,10 +888,13 @@ impl MurmurApp {
             Phase::Setup
         });
         self.restore_previous(ctx, previous);
-        self.show_window(ctx, true);
+        self.show_window(ctx, false);
     }
 
     fn restore_previous(&self, _ctx: &egui::Context, previous: isize) {
+        if previous == 0 {
+            return;
+        }
         let own = self.hwnd.map(|hwnd| hwnd.0 as isize).unwrap_or(0);
         let restore_focus = previous != 0 && previous != own;
         // Run this synchronously so the calibration overlay gets focus *after*
