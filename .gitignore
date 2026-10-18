@@ -1,0 +1,25 @@
+# Portable build toolchain (large, one-time)
+.toolchain/
+
+# Rust build output
+app/target/
+
+# Native bridge output
+resources/bin/*.exe
+
+# Portable release output
+release/
+
+# Research/design scratch and screenshots used during development
+_research/
+
+# Node tooling (only used by the one-time downloader)
+node_modules/
+.npm-cache/
+out/
+*.tsbuildinfo
+
+# Local logs and OS noise
+*.log
+.DS_Store
+Thumbs.db
