@@ -359,6 +359,14 @@ namespace Murmur.Native
             }
             try
             {
+                RECT client;
+                NativeMethods.GetClientRect(hwnd, out client);
+                Trace(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "begin hwnd={0} client={1}x{2} mode={3} mic={4:F4},{5:F4} focus={6:F4},{7:F4}",
+                    hwnd.ToInt64(), client.Right - client.Left, client.Bottom - client.Top,
+                    _hideMode, _micX, _micY, _focusX, _focusY));
+
                 if (_hideMode == "alpha")
                 {
                     if (!HideWithAlpha())
@@ -374,6 +382,10 @@ namespace Murmur.Native
                 ForceForeground(hwnd);
                 Thread.Sleep(240);
                 IntPtr foreground = NativeMethods.GetForegroundWindow();
+                Trace(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "begin foreground expected={0} actual={1} visible={2} alpha={3}",
+                    hwnd.ToInt64(), foreground.ToInt64(), NativeMethods.IsWindowVisible(hwnd), _layeredAdded));
                 if (!NativeMethods.IsWindowVisible(hwnd) || foreground != hwnd)
                 {
                     throw new InvalidOperationException(
@@ -438,13 +450,16 @@ namespace Murmur.Native
             string result = null;
             try
             {
+                Trace(string.Format(CultureInfo.InvariantCulture, "end start mic={0:F4},{1:F4} clear={2}", micX, micY, clearAfter));
                 ClickClient(micX, micY);
-                Thread.Sleep(520);
+                Trace("end mic click sent");
+                Thread.Sleep(900);
                 Write("TRANSCRIBING");
-                Thread.Sleep(620);
+                Thread.Sleep(900);
                 ClickClient(_focusX, _focusY);
-                Thread.Sleep(140);
+                Thread.Sleep(180);
                 result = CopyComposer(clearAfter);
+                Trace("end copy result=" + (result == null ? "EMPTY" : "len=" + result.Length));
             }
             finally
             {
@@ -489,6 +504,11 @@ namespace Murmur.Native
             Write("CLICKTHROUGH enabled=" + (enable ? "1" : "0"));
         }
 
+        private static void Trace(string message)
+        {
+            try { Write("LOG " + B64(message)); } catch { }
+        }
+
         private string CopyComposer(bool clearAfter)
         {
             string original = SafeGetClipboard();
@@ -510,13 +530,17 @@ namespace Murmur.Native
                 string last = string.Empty;
                 int stable = 0;
                 string candidate = null;
-                for (int i = 0; i < 14; i++)
+                for (int i = 0; i < 24; i++)
                 {
                     SendCtrl(VK_A);
                     Thread.Sleep(45);
                     SendCtrl(VK_C);
                     Thread.Sleep(430);
                     string text = SafeGetClipboard();
+                    Trace(string.Format(
+                        CultureInfo.InvariantCulture,
+                        "copy {0}: len={1} sentinel={2} empty={3}",
+                        i, text.Length, text == sentinel, text.Length == 0));
                     if (text == sentinel || text.Length == 0)
                     {
                         stable = 0;
@@ -794,6 +818,10 @@ namespace Murmur.Native
             NativeMethods.ClientToScreen(_hwnd, ref origin);
             int x = origin.X + (int)Math.Round(nx * Math.Max(1, cr.Right - cr.Left));
             int y = origin.Y + (int)Math.Round(ny * Math.Max(1, cr.Bottom - cr.Top));
+            Trace(string.Format(
+                CultureInfo.InvariantCulture,
+                "click {0:F4},{1:F4} client={2}x{3} origin={4},{5} screen={6},{7}",
+                nx, ny, cr.Right - cr.Left, cr.Bottom - cr.Top, origin.X, origin.Y, x, y));
 
             POINT previous;
             NativeMethods.GetCursorPos(out previous);

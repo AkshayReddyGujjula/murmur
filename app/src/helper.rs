@@ -122,7 +122,11 @@ impl HelperSession {
                     if let Some(error) = parse_error(&line) {
                         bail!("{error}");
                     }
-                    if line.starts_with("TRANSCRIBING") || line.starts_with("LOG ") {
+                    if let Some(encoded) = line.strip_prefix("LOG ") {
+                        crate::config::log_line(&format!("bridge: {}", decode_b64(encoded)));
+                        continue;
+                    }
+                    if line.starts_with("TRANSCRIBING") {
                         continue;
                     }
                     let done = terminal(&line);
