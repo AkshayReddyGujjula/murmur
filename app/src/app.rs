@@ -440,7 +440,7 @@ impl MurmurApp {
                     SessionEvent::Transcribing => {
                         if self.phase == Phase::Listening || self.phase == Phase::Arming {
                             self.set_phase(Phase::Transcribing);
-                            self.stop_deadline = Some(Instant::now() + Duration::from_secs(25));
+                            self.stop_deadline = Some(Instant::now() + Duration::from_secs(40));
                         }
                     }
                     SessionEvent::Finished(text) => {
@@ -690,7 +690,7 @@ impl MurmurApp {
         if let Some((_, tx)) = &self.session_tx {
             let _ = tx.send(SessionCommand::Stop);
             self.set_phase(Phase::Transcribing);
-            self.stop_deadline = Some(Instant::now() + Duration::from_secs(25));
+            self.stop_deadline = Some(Instant::now() + Duration::from_secs(40));
             ctx.request_repaint();
         }
     }

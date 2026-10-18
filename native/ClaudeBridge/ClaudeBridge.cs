@@ -451,6 +451,12 @@ namespace Murmur.Native
             try
             {
                 Trace(string.Format(CultureInfo.InvariantCulture, "end start mic={0:F4},{1:F4} clear={2}", micX, micY, clearAfter));
+                ForceForeground(_hwnd);
+                Thread.Sleep(200);
+                Trace(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "end foreground actual={0} expected={1}",
+                    NativeMethods.GetForegroundWindow().ToInt64(), _hwnd.ToInt64()));
                 ClickClient(micX, micY);
                 Trace("end mic click sent");
                 Thread.Sleep(900);
@@ -530,7 +536,7 @@ namespace Murmur.Native
                 string last = string.Empty;
                 int stable = 0;
                 string candidate = null;
-                for (int i = 0; i < 24; i++)
+                for (int i = 0; i < 12; i++)
                 {
                     SendCtrl(VK_A);
                     Thread.Sleep(45);
@@ -539,9 +545,10 @@ namespace Murmur.Native
                     string text = SafeGetClipboard();
                     Trace(string.Format(
                         CultureInfo.InvariantCulture,
-                        "copy {0}: len={1} sentinel={2} empty={3}",
-                        i, text.Length, text == sentinel, text.Length == 0));
-                    if (text == sentinel || text.Length == 0)
+                        "copy {0}: len={1} sentinel={2} empty={3} whitespace={4}",
+                        i, text.Length, text == sentinel, text.Length == 0,
+                        text.Trim().Length == 0));
+                    if (text == sentinel || text.Trim().Length == 0)
                     {
                         stable = 0;
                         continue;

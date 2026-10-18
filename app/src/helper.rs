@@ -246,7 +246,7 @@ impl HelperSession {
             mic.y,
             if clear_after { 1 } else { 0 }
         );
-        let lines = self.request(&command, Duration::from_secs(20), |line| {
+        let lines = self.request(&command, Duration::from_secs(30), |line| {
             line.starts_with("TEXT") || line.starts_with("EMPTY")
         })?;
         Ok(transcript_from_lines(&lines))
