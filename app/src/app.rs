@@ -411,6 +411,11 @@ impl MurmurApp {
                 }
             }
             AppEvent::F8 => {
+                crate::config::log_line(&format!(
+                    "F8 event phase={:?} stage={:?}",
+                    self.phase,
+                    self.calibration.as_ref().map(|c| c.stage)
+                ));
                 if self.phase == Phase::Calibration {
                     self.capture_calibration(ctx);
                 }
@@ -510,7 +515,7 @@ impl MurmurApp {
                         (28.0 * ppp) as i32,
                     );
                 }
-                self.show_window(ctx, false);
+                self.show_window(ctx, true);
                 if let Some(hwnd) = self.hwnd {
                     platform::set_vertical_position(hwnd, (28.0 * ppp) as i32);
                 }
@@ -813,7 +818,10 @@ impl MurmurApp {
             let _ = tx.send(AppEvent::F8);
             ctx_clone.request_repaint();
         }) {
-            Ok(service) => self.f8_hotkey = Some(service),
+            Ok(service) => {
+                crate::config::log_line("F8 hotkey registered");
+                self.f8_hotkey = Some(service);
+            }
             Err(error) => {
                 self.calibration = None;
                 self.restore_previous(ctx, previous);
@@ -837,13 +845,19 @@ impl MurmurApp {
         let client = &window.client;
         let nx = (cx - client.x) as f64 / client.w.max(1) as f64;
         let ny = (cy - client.y) as f64 / client.h.max(1) as f64;
+        crate::config::log_line(&format!(
+            "calibration capture stage={:?} cursor={},{} client={},{},{},{} norm={:.4},{:.4}",
+            calibration.stage, cx, cy, client.x, client.y, client.w, client.h, nx, ny
+        ));
         let Some(point) = Point::new(nx, ny) else {
             calibration.message = Some("That point is outside Claude. Try again.".to_owned());
+            crate::config::log_line("calibration rejected: outside");
             ctx.request_repaint();
             return;
         };
         if nx < 0.01 || nx > 0.99 || ny < 0.01 || ny > 0.99 {
             calibration.message = Some("That point is on the edge. Aim a little inside.".to_owned());
+            crate::config::log_line("calibration rejected: edge");
             ctx.request_repaint();
             return;
         }

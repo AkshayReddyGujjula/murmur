@@ -61,15 +61,22 @@ If the setup screen says **Ctrl+Space unavailable**, open Settings and select
 
 ## 1. Calibration (must pass)
 
+- [ ] **Before** clicking Calibrate, make sure Claude is visible on screen.
+      If it is behind another window, click Claude or its taskbar button now.
 - [ ] Click **Calibrate Claude**.
-- [ ] Murmur should shrink to the small calibration card. **Claude is not moved.**
-      If Claude is behind Murmur or on another monitor, click Claude once to
-      bring it forward; the card stays on top and does not steal focus back.
+- [ ] Murmur should shrink to the small calibration card, and the card takes
+      keyboard focus. **Do not click Claude after this point.** Calibration only
+      needs the mouse hovered over Claude; the Claude composer does not need
+      focus. Clicking Claude would take focus away from the card and F8 would
+      stop advancing.
 - [ ] Hover the **centre of Claude’s mic button**, then press **F8**.
       Do not click. The card should move to “Step 2 of 2”.
 - [ ] Hover the **centre of Claude’s composer text area**, then press **F8**.
+      Do not click the composer.
 - [ ] The card should close and Murmur should show **Idle**. Claude should be
       untouched and still on its original monitor.
+- [ ] Now click Claude once (or its taskbar button) so it is foreground again
+      before starting a take with Ctrl+Space.
 - [ ] Open Settings and note the two calibration percentages.
 
 **If the card does not appear:** close it, send me the log, and don’t retry

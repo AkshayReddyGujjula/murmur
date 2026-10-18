@@ -315,7 +315,7 @@ impl MurmurApp {
             (
                 "02",
                 "Point us at the mic",
-                "Bring Claude forward, then hover its mic and composer. Press F8. Nothing is clicked.",
+                "Keep this card focused and hover Claude's mic and composer. Press F8. Do not click Claude.",
             ),
             (
                 "03",
@@ -1348,7 +1348,7 @@ impl MurmurApp {
         let message = calibration
             .message
             .clone()
-            .unwrap_or_else(|| "Bring Claude forward, then hover the point. Nothing is clicked.".to_owned());
+            .unwrap_or_else(|| "Keep this card focused. Do not click Claude — just hover the point.".to_owned());
         theme::text(
             &painter,
             pos2(rect.left() + 20.0, rect.top() + 153.0),
