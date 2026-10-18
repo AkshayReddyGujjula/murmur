@@ -210,7 +210,8 @@ impl MurmurApp {
         self.draw_dial(ui, center, 104.0);
         let found = self.claude_found;
         let (label, color) = match found {
-            Some(true) => ("CLAUDE IS REACHABLE", theme::GREEN),
+            Some(true) if self.claude_visible => ("CLAUDE IS REACHABLE", theme::GREEN),
+            Some(true) => ("OPEN CLAUDE TO CALIBRATE", theme::AMBER),
             Some(false) => ("CLAUDE IS NOT REACHABLE", theme::RED),
             None => ("CHECKING CLAUDE", theme::MUTED),
         };
@@ -271,7 +272,8 @@ impl MurmurApp {
             1.2,
         );
         let (found_label, found_color) = match self.claude_found {
-            Some(true) => ("WINDOW FOUND", theme::GREEN),
+            Some(true) if self.claude_visible => ("WINDOW FOUND", theme::GREEN),
+            Some(true) => ("WINDOW IN BACKGROUND", theme::AMBER),
             Some(false) => ("WINDOW NOT FOUND", theme::RED),
             None => ("CHECKING", theme::MUTED),
         };
@@ -384,12 +386,17 @@ impl MurmurApp {
                 13.0,
             );
         } else {
+            let (hint, color) = if self.claude_found == Some(true) && !self.claude_visible {
+                ("OPEN CLAUDE, THEN CALIBRATE", theme::AMBER)
+            } else {
+                ("CLAUDE'S DICTATION · YOUR SHORTCUT", theme::DIM)
+            };
             theme::tracked(
                 &painter,
                 pos2(rect.right() - 320.0, buttons_y + 15.0),
-                "CLAUDE'S DICTATION · YOUR SHORTCUT",
+                hint,
                 theme::semibold(7.5),
-                theme::DIM,
+                color,
                 1.0,
             );
         }
@@ -923,7 +930,11 @@ impl MurmurApp {
         theme::tracked(
             &painter,
             pos2(left + 20.0, top + 94.0),
-            "NEEDS ATTENTION / CLAUDE",
+            if self.error_from_calibration {
+                "CALIBRATION / CLAUDE"
+            } else {
+                "NEEDS ATTENTION / CLAUDE"
+            },
             theme::semibold(8.5),
             theme::RED,
             1.3,
@@ -931,7 +942,11 @@ impl MurmurApp {
         theme::text(
             &painter,
             pos2(left, top + 114.0),
-            "That take didn't land.",
+            if self.error_from_calibration {
+                "Couldn't open Claude."
+            } else {
+                "That take didn't land."
+            },
             theme::semibold(30.0),
             theme::TEXT,
         );
@@ -973,13 +988,21 @@ impl MurmurApp {
         if theme::button(
             ui,
             Rect::from_min_size(pos2(left, buttons_y), vec2(134.0, 40.0)),
-            "TRY AGAIN",
+            if self.error_from_calibration {
+                "CALIBRATE"
+            } else {
+                "TRY AGAIN"
+            },
             ButtonKind::Primary,
             true,
         )
         .clicked()
         {
-            self.action = Some(UiAction::Start);
+            self.action = Some(if self.error_from_calibration {
+                UiAction::Calibrate
+            } else {
+                UiAction::Start
+            });
         }
         if theme::button(
             ui,
@@ -1139,7 +1162,9 @@ impl MurmurApp {
         let card = Rect::from_min_size(pos2(right_x, top + 176.0), vec2(rect.right() - MARGIN - right_x, 126.0));
         theme::panel(&painter, card, 12.0, theme::SURFACE, theme::BORDER);
         let (claude_label, claude_color) = match self.claude_found {
-            Some(true) => ("ready", theme::GREEN),
+            Some(true) if self.claude_visible => ("ready", theme::GREEN),
+            Some(true) if self.claude_minimized => ("minimized", theme::AMBER),
+            Some(true) => ("background", theme::AMBER),
             Some(false) => ("not found", theme::RED),
             None => ("checking", theme::MUTED),
         };
@@ -1446,7 +1471,9 @@ impl MurmurApp {
             Phase::Transcribing | Phase::Cancelling => ("CLAUDE / WRITING".into(), theme::BLUE),
             Phase::Calibration => ("CLAUDE / CALIBRATING".into(), theme::AMBER),
             _ => match self.claude_found {
-                Some(true) => ("CLAUDE / READY".into(), theme::GREEN),
+                Some(true) if self.claude_visible => ("CLAUDE / READY".into(), theme::GREEN),
+                Some(true) if self.claude_minimized => ("CLAUDE / MINIMIZED".into(), theme::AMBER),
+                Some(true) => ("CLAUDE / BACKGROUND".into(), theme::AMBER),
                 Some(false) => ("CLAUDE / OFFLINE".into(), theme::RED),
                 None => ("CLAUDE / CHECKING".into(), theme::MUTED),
             },

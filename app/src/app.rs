@@ -93,7 +93,11 @@ enum AppEvent {
     Session { id: u64, event: SessionEvent },
     CalibrationReady { window: WindowInfo, previous: isize },
     CalibrationFailed(String),
-    ClaudeStatus(bool),
+    ClaudeStatus {
+        found: bool,
+        visible: bool,
+        minimized: bool,
+    },
     Restored,
 }
 
@@ -106,6 +110,9 @@ pub struct MurmurApp {
     pub(crate) copied: bool,
     pub(crate) notice: Option<String>,
     pub(crate) claude_found: Option<bool>,
+    pub(crate) claude_visible: bool,
+    pub(crate) claude_minimized: bool,
+    pub(crate) error_from_calibration: bool,
     pub(crate) hotkey_active: bool,
     pub(crate) hotkey_error: Option<String>,
     pub(crate) session_started: Option<Instant>,
@@ -191,6 +198,9 @@ impl MurmurApp {
             copied: false,
             notice: None,
             claude_found: None,
+            claude_visible: false,
+            claude_minimized: false,
+            error_from_calibration: false,
             hotkey_active,
             hotkey_error,
             session_started: None,
@@ -226,6 +236,8 @@ impl MurmurApp {
         };
         self.show_on_launch = true;
         self.claude_found = Some(true);
+        self.claude_visible = true;
+        self.claude_minimized = false;
         self.hotkey_active = true;
         self.hotkey_error = None;
         let now = Instant::now();
@@ -473,6 +485,7 @@ impl MurmurApp {
                         self.session_tx = None;
                         self.stop_deadline = None;
                         self.error = Some(message);
+                        self.error_from_calibration = false;
                         self.set_phase(Phase::Error);
                         self.show_window(ctx, true);
                     }
@@ -506,12 +519,19 @@ impl MurmurApp {
             AppEvent::CalibrationFailed(message) => {
                 self.hotkey_error = None;
                 self.error = Some(message);
+                self.error_from_calibration = true;
                 self.calibration = None;
                 self.set_phase(Phase::Error);
                 self.show_window(ctx, true);
             }
-            AppEvent::ClaudeStatus(found) => {
+            AppEvent::ClaudeStatus {
+                found,
+                visible,
+                minimized,
+            } => {
                 self.claude_found = Some(found);
+                self.claude_visible = visible;
+                self.claude_minimized = minimized;
             }
             AppEvent::Restored => {
                 self.notice = Some("Claude's window state was restored.".to_owned());
@@ -522,10 +542,15 @@ impl MurmurApp {
     fn spawn_claude_check(&self, ctx: egui::Context) {
         let tx = self.events_tx.clone();
         thread::spawn(move || {
-            let found = HelperSession::start()
-                .and_then(|mut helper| helper.find().map(|window| window.is_some()))
-                .unwrap_or(false);
-            let _ = tx.send(AppEvent::ClaudeStatus(found));
+            let status = match HelperSession::start().and_then(|mut helper| helper.find()) {
+                Ok(Some(window)) => (true, window.visible, window.minimized),
+                _ => (false, false, false),
+            };
+            let _ = tx.send(AppEvent::ClaudeStatus {
+                found: status.0,
+                visible: status.1,
+                minimized: status.2,
+            });
             ctx.request_repaint();
         });
     }

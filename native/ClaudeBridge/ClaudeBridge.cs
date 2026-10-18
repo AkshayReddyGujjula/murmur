@@ -257,10 +257,24 @@ namespace Murmur.Native
             }
             // Calibration is a temporary reveal. Save the real state so the app can
             // put Claude back exactly where it was (usually minimized) afterward.
-            SaveState(hwnd);
+            if (!SaveState(hwnd))
+            {
+                WriteError("state-write-failed", "Murmur could not save Claude's window state, so it did not reveal the window.", null);
+                return;
+            }
             IntPtr previous = NativeMethods.GetForegroundWindow();
             ForceForeground(hwnd);
-            Thread.Sleep(180);
+            Thread.Sleep(250);
+            IntPtr foreground = NativeMethods.GetForegroundWindow();
+            if (!NativeMethods.IsWindowVisible(hwnd) || foreground != hwnd)
+            {
+                RestoreAll();
+                WriteError(
+                    "not-showable",
+                    "Claude's window exists, but Windows would not bring it forward. Open Claude from the taskbar or tray, then try again.",
+                    null);
+                return;
+            }
             ReportWindow(hwnd);
             Write(string.Format(CultureInfo.InvariantCulture, "FOCUSED hwnd={0} previous={1}", hwnd.ToInt64(), previous.ToInt64()));
         }
@@ -338,7 +352,11 @@ namespace Murmur.Native
                 return;
             }
 
-            SaveState(hwnd);
+            if (!SaveState(hwnd))
+            {
+                WriteError("state-write-failed", "Murmur could not save Claude's window state, so nothing was changed.", null);
+                return;
+            }
             try
             {
                 if (_hideMode == "alpha")
@@ -348,10 +366,19 @@ namespace Murmur.Native
                         _hideMode = "visible";
                     }
                 }
-                WriteRestoreFile();
+                if (!WriteRestoreFile())
+                {
+                    throw new InvalidOperationException("Murmur could not save the restore record; Claude was not clicked.");
+                }
 
                 ForceForeground(hwnd);
                 Thread.Sleep(240);
+                IntPtr foreground = NativeMethods.GetForegroundWindow();
+                if (!NativeMethods.IsWindowVisible(hwnd) || foreground != hwnd)
+                {
+                    throw new InvalidOperationException(
+                        "Claude's window is hidden or Windows would not bring it forward. Open Claude from the taskbar or tray, then try again.");
+                }
 
                 if (fresh)
                 {
@@ -580,7 +607,7 @@ namespace Murmur.Native
             return ok;
         }
 
-        private void SaveState(IntPtr hwnd)
+        private bool SaveState(IntPtr hwnd)
         {
             _hwnd = hwnd;
             _previousForeground = NativeMethods.GetForegroundWindow();
@@ -594,10 +621,10 @@ namespace Murmur.Native
             _originalTop = wr.Top;
             _originalWidth = wr.Right - wr.Left;
             _originalHeight = wr.Bottom - wr.Top;
-            WriteRestoreFile();
+            return WriteRestoreFile();
         }
 
-        private void WriteRestoreFile()
+        private bool WriteRestoreFile()
         {
             try
             {
@@ -617,10 +644,12 @@ namespace Murmur.Native
                 sb.AppendLine("height=" + _originalHeight.ToString(CultureInfo.InvariantCulture));
                 sb.AppendLine("minimize=" + (_minimizeAfter ? "1" : "0"));
                 File.WriteAllText(Path.Combine(dir, RestoreFile), sb.ToString(), Encoding.UTF8);
+                return true;
             }
             catch (Exception ex)
             {
                 Log("write restore failed: " + ex.Message);
+                return false;
             }
         }
 
@@ -934,6 +963,11 @@ namespace Murmur.Native
 
         private static string StateDirectory()
         {
+            string custom = Environment.GetEnvironmentVariable("MURMUR_LOCAL_DIR");
+            if (!string.IsNullOrWhiteSpace(custom))
+            {
+                return custom;
+            }
             string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
             return Path.Combine(local, "Murmur");
         }

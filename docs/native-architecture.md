@@ -117,9 +117,20 @@ bridge's `RESTORE` command.
   the calibration card.
 - The native bridge was probed read-only (`PING`, `FIND`, window discovery) and
   selected the hidden Claude main window rather than the small minimized popover.
+- A mock bridge exercised the complete session worker end-to-end: global
+  `Ctrl+Space` → `BEGIN` → listening → `Ctrl+Space` → `END` → transcribing →
+  ready, with the transcript on the clipboard. This caught a real parser bug:
+  the `TEXT text=…` field was skipped, so every take would have looked empty.
+  The parser is fixed, three unit tests cover the `TEXT`/`EMPTY` forms, and the
+  final release build also completed a hotkey-driven mock take with the
+  transcript on the clipboard.
+- A real-bridge focus test against a ghosted Claude window showed that Windows
+  would not reveal it. The bridge now refuses to click in that state and returns
+  `not-showable`; calibration shows an error instead of a card over an invisible
+  window. A failed focus restores the saved state.
 - The final live mic click/dictation test is intentionally left to the user:
   it requires speaking into their microphone and temporarily bringing Claude
-  forward for calibration.
+  forward for calibration. The 5pm checklist is in `docs/TESTING.md`.
 - The release build must be launched outside the agent sandbox for a normal
   tray/hotkey lifecycle; the sandbox can terminate detached GUI children between
   tool calls.

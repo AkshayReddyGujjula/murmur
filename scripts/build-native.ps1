@@ -76,6 +76,10 @@ if (Test-Path $screenshots) {
   New-Item -ItemType Directory -Force -Path $destScreens | Out-Null
   Copy-Item (Join-Path $screenshots "*") $destScreens -Force
 }
+$testing = Join-Path $root "docs\TESTING.md"
+if (Test-Path $testing) {
+  Copy-Item $testing (Join-Path $portable "TESTING.md") -Force
+}
 @"
 Murmur 0.1.0
 
@@ -87,6 +91,8 @@ Murmur 0.1.0
 
 The prompt is copied automatically. Murmur uses Claude's built-in dictation;
 it does not record audio or run a speech model locally.
+
+For the full 5pm test pass, open TESTING.md next to this file.
 
 If Ctrl+Space conflicts with an IME, open Settings and switch to Ctrl+Alt+Space.
 "@ | Set-Content -Path (Join-Path $portable "START-HERE.txt") -Encoding UTF8

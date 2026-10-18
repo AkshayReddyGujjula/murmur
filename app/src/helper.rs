@@ -245,18 +245,7 @@ impl HelperSession {
         let lines = self.request(&command, Duration::from_secs(20), |line| {
             line.starts_with("TEXT") || line.starts_with("EMPTY")
         })?;
-        for line in lines {
-            if let Some(value) = line.strip_prefix("TEXT ") {
-                let fields = parse_fields(value);
-                if let Some(encoded) = fields.get("text") {
-                    return Ok(Some(decode_b64(encoded)));
-                }
-            }
-            if line.starts_with("EMPTY") {
-                return Ok(None);
-            }
-        }
-        Ok(None)
+        Ok(transcript_from_lines(&lines))
     }
 
     pub fn cancel(&mut self) -> Result<()> {
@@ -379,6 +368,24 @@ fn parse_rect(value: &str) -> Option<RectI> {
     Some(RectI { x, y, w, h })
 }
 
+fn transcript_from_lines(lines: &[String]) -> Option<String> {
+    for line in lines {
+        if line.starts_with("TEXT ") {
+            // parse_fields skips its first token, so give it the whole line
+            // ("TEXT"), not the substring after it. Passing the substring would
+            // skip the `text=` field itself and every transcript would look empty.
+            let fields = parse_fields(line);
+            if let Some(encoded) = fields.get("text") {
+                return Some(decode_b64(encoded));
+            }
+        }
+        if line.starts_with("EMPTY") {
+            return None;
+        }
+    }
+    None
+}
+
 fn parse_fields(line: &str) -> HashMap<&str, &str> {
     let mut fields = HashMap::new();
     for token in line.split_whitespace().skip(1) {
@@ -414,4 +421,31 @@ fn decode_b64(value: &str) -> String {
         .ok()
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_text_transcript_with_base64_padding() {
+        let text = "Mock transcript, with punctuation and OAuth.";
+        let line = format!("TEXT text={} chars={}", B64.encode(text), text.len());
+        assert_eq!(transcript_from_lines(&[line]), Some(text.to_owned()));
+    }
+
+    #[test]
+    fn ignores_transcribing_line_before_text() {
+        let text = "Second take.";
+        let lines = vec![
+            "TRANSCRIBING".to_owned(),
+            format!("TEXT text={} chars={}", B64.encode(text), text.len()),
+        ];
+        assert_eq!(transcript_from_lines(&lines), Some(text.to_owned()));
+    }
+
+    #[test]
+    fn empty_transcript_is_none() {
+        assert_eq!(transcript_from_lines(&["EMPTY".to_owned()]), None);
+    }
 }

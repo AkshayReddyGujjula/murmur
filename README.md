@@ -24,9 +24,9 @@ pasting it elsewhere. Murmur removes that loop:
 
 ## Quick start
 
-1. Keep the **Claude desktop app open** with its main window running. Its
-   built-in dictation must be available (signed in with a Claude.ai account and
-   microphone permission granted).
+1. Keep the **Claude desktop app open** with its main window running and visible
+   for the first calibration. Its built-in dictation must be available (signed in
+   with a Claude.ai account and microphone permission granted).
 2. Run `release/Murmur/Murmur.exe` (or build it from source).
 3. Click **Calibrate Claude**.
 4. Hover Claude's **mic button**, then press **F8**.
@@ -57,7 +57,7 @@ appears. Use **Copy again** if another app replaced the clipboard in the meantim
 
 ## Footprint
 
-- Portable executable: **7.9 MB** (7,888,384 bytes)
+- Portable executable: **7.9 MB** (7,888,896 bytes)
 - Portable zip: **4.8 MB** (includes the screenshots and README)
 - Claude bridge: **23 KB**
 - No Electron, Node, WebView2, Chromium, Python, or STT model in the app.
@@ -69,6 +69,10 @@ software-rendered agent session; the full Murmur UI measured ~350 MB, so the UI
 itself is negligible. With a hardware D3D12 adapter, wgpu's footprint should be
 lower. If guaranteed low memory on a GPU-less VM is a requirement, a CPU-rendered
 UI backend is the next optimization step.
+
+> **Testing today?** Follow [`docs/TESTING.md`](docs/TESTING.md) Ã¢â‚¬â€ it is the
+> short 5pm checklist for calibration, a real voice take, clipboard, cancel,
+> recovery, and window states.
 
 ## Screens
 
@@ -181,10 +185,12 @@ only runs the read-only `FIND` command.
 - Config: `%APPDATA%\Murmur\config.json`
 - Logs: `%LOCALAPPDATA%\Murmur\murmur.log`
 - Bridge recovery state: `%LOCALAPPDATA%\Murmur\restore-state.txt`
+- `MURMUR_DATA_DIR` overrides the config folder; `MURMUR_LOCAL_DIR` overrides
+  the log and bridge-state folder (used by previews and tests).
 - The bridge and app use the same restore file, so a bridge crash can be recovered
   from the Murmur settings screen without closing Claude.
 
-Settings → **Restore Claude** asks the bridge to restore the last saved window
+Settings Ã¢â€ â€™ **Restore Claude** asks the bridge to restore the last saved window
 placement. **Open logs** opens the log folder.
 
 ## Privacy
@@ -201,6 +207,9 @@ placement. **Open logs** opens the log folder.
 
 - Claude's window must exist. If Claude is fully quit, use **Open Claude** or
   launch it yourself first.
+- Claude must be **visible or minimized**, not tray-hidden/ghosted. Murmur now
+  refuses to click a window Windows cannot bring forward; the setup screen shows
+  **CLAUDE / BACKGROUND** in that state. Open Claude from the taskbar/tray first.
 - The desktop app's layout can change with a Claude update. Re-run calibration if
   the mic or composer moves.
 - The click path is calibration-based, not accessibility-based. A radically
