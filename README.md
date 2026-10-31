@@ -10,8 +10,9 @@ included in Claude or Codex; no separately billed speech API or local ASR model.
 
 Building an opt-in feasibility harness for a **dedicated Claude Code CLI child**.
 This is not yet the finished tray app. No app, provider, microphone or clipboard
-test has been authorized or run. Code changes, compilation, and isolated automated
-tests are authorized. Live tests require separate user approval.
+test had been run at the initial code checkpoint. The user separately approved
+isolated login/probe and microphone checks on 2026-10-31. The existing Claude
+session and clipboard remain off limits.
 
 The harness must use its own Claude configuration profile, not attach to the
 user's existing Claude process, window, terminal, session, or configuration.
@@ -36,7 +37,9 @@ checks do not establish native terminal startup or successful speech recognition
 The test runner keeps temporary fixtures under the ignored `.test-output/` folder.
 
 The isolated live-test procedure is in [docs/LIVE-CHECK.md](docs/LIVE-CHECK.md).
-It requires separate approval before running `--login` or `--probe`.
+That isolated login/probe scope is now approved. Its portable profile lives in
+the ignored `build\data\feasibility-v1` folder; it does not reuse the user's
+existing Claude profile.
 
 ## Local recovery
 

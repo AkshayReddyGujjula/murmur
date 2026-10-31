@@ -1,14 +1,14 @@
-# Live feasibility check: awaiting separate user approval
+# Live feasibility check: approved by user on 2026-10-31
 
-The approved code plan does not itself authorize these actions. Do not run the
-commands below until the user approves app/login/microphone testing. These are
+The user separately approved isolated login/probe and microphone tests on
+2026-10-31. The existing Claude session and clipboard remain off limits. These are
 diagnostics for a single owned Claude Code child, not the finished tray app.
 
 ## What would run
 
 1. `build\Murmur.Probe.exe --login` starts the installed Claude CLI's normal
    `auth login` flow with `CLAUDE_CONFIG_DIR` pointing at a new Murmur-owned profile
-   under `%LOCALAPPDATA%\Murmur\feasibility-v1\profile`. It may open a browser and
+   under `build\data\feasibility-v1\profile` beside the executable. It may open a browser and
    requires the user's sign-in. It does not read/copy existing Claude credentials.
    The effect of any CLI-wide state kept outside `CLAUDE_CONFIG_DIR` remains a
    verification gate; Murmur itself never reads or copies the original profile.

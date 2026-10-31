@@ -20,7 +20,7 @@ namespace Murmur.Probe
 
         public IsolatedProfile()
         {
-            string root = RootOverride == null ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Murmur", "feasibility-v1") : RootOverride();
+            string root = RootOverride == null ? DefaultRoot() : RootOverride();
             root = Path.GetFullPath(root);
             RejectLinks(root);
             string marker = Path.Combine(root, ".murmur-owned-root");
@@ -51,6 +51,13 @@ namespace Murmur.Probe
             Arguments = new string[] { "--safe-mode", "--setting-sources", "", "--settings", settings,
                 "--strict-mcp-config", "--mcp-config", mcp, "--tools", "", "--session-id", Guid.NewGuid().ToString() };
             EnvironmentOverrides = EnvironmentForChild(ProfileDirectory, SessionDirectory, ExportPath);
+        }
+
+        internal static string DefaultRoot()
+        {
+            // Portable data stays beside this executable. AppData is not writable
+            // by the live probe in the current host; do not broaden permissions.
+            return Path.Combine(Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location), "data", "feasibility-v1");
         }
 
         private static void RejectLinks(string path)

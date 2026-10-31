@@ -25,6 +25,9 @@ namespace Murmur.Tests
                     if (Program.Main(new string[] { "--unknown" }) == 0) throw new Exception("Invalid mode accepted.");
                 }
                 if (resolvedRoots != 0 || Directory.Exists(root)) throw new Exception("An inert command attempted profile initialization.");
+                string executableDirectory = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+                if (IsolatedProfile.DefaultRoot() != Path.Combine(executableDirectory, "data", "feasibility-v1"))
+                    throw new Exception("Default data root escaped the portable executable directory.");
                 // Positive control: prove the seam redirects the real constructor,
                 // rather than checking a path the production code never uses.
                 IsolatedProfile fixture = new IsolatedProfile();
