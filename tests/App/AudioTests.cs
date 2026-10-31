@@ -94,6 +94,21 @@ namespace Murmur.Tests.App
                 float half = LevelMath.ToMeter(0.5f);
                 Check(half > 0.8f && half < 1f, "meter of 0.5 in range, got " + half);
 
+                Check(MeterTeardown.MaxUnprepareRetries == 10, "unprepare retries are bounded at 10");
+                Check(MeterTeardown.RetryDelayMs == 10, "unprepare retries sleep 10 ms");
+                Check(MeterTeardown.ClassifyUnprepare(0) == UnprepareOutcome.Free, "successful unprepare is freed");
+                Check(MeterTeardown.ClassifyUnprepare(MeterTeardown.StillPlaying) == UnprepareOutcome.Retry, "WAVERR_STILLPLAYING retries unprepare");
+                Check(MeterTeardown.ClassifyUnprepare(34) == UnprepareOutcome.Leak, "other unprepare errors leak");
+                Check(MeterTeardown.MayFreeBuffer(0), "header and data free only after successful unprepare");
+                Check(!MeterTeardown.MayFreeBuffer(MeterTeardown.StillPlaying), "still-playing header and data are leaked");
+                Check(!MeterTeardown.MayFreeBuffer(34), "failed unprepare leaks header and data");
+                Check(!MeterTeardown.MayFreeBuffer(-1), "unknown unprepare result leaks header and data");
+                Check(MeterTeardown.ShouldRetryUnprepare(0, 0) == false, "successful unprepare is not retried");
+                Check(MeterTeardown.ShouldRetryUnprepare(34, 0) == false, "other unprepare errors are not retried");
+                Check(MeterTeardown.ShouldRetryUnprepare(MeterTeardown.StillPlaying, 0), "still-playing unprepare is retried");
+                Check(MeterTeardown.ShouldRetryUnprepare(MeterTeardown.StillPlaying, MeterTeardown.MaxUnprepareRetries - 1), "last bounded retry runs");
+                Check(MeterTeardown.ShouldRetryUnprepare(MeterTeardown.StillPlaying, MeterTeardown.MaxUnprepareRetries) == false, "retries stop after 10");
+
                 MicLevelMeter meter = new MicLevelMeter();
                 Check(!meter.IsRunning, "fresh meter is not running");
                 meter.Stop();
@@ -110,7 +125,7 @@ namespace Murmur.Tests.App
                 meter2.Dispose();
                 Check(!meter2.IsRunning, "double dispose is safe");
 
-                Console.WriteLine("PASS: LevelMath silence, full-scale, -20dBFS sine, odd and empty input; MicLevelMeter never-started stop/dispose safe.");
+                Console.WriteLine("PASS: LevelMath silence, full-scale, -20dBFS sine, odd and empty input; teardown free-only-on-success rules; MicLevelMeter never-started stop/dispose safe.");
                 return 0;
             }
             catch (Exception error)

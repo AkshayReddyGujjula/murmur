@@ -14,10 +14,12 @@ namespace Murmur.App.Audio
         private const uint WhdrDone = 0x1;
         private const int BufferCount = 4;
         private const int BufferBytes = 1024;
+        private const int JoinTimeoutMs = 2000;
 
         private readonly object gate = new object();
         private bool disposed;
         private bool running;
+        private bool tearingDown;
         private volatile bool stopping;
         private IntPtr waveHandle;
         private IntPtr[] headerPtrs;
@@ -45,10 +47,13 @@ namespace Murmur.App.Audio
                 {
                     return;
                 }
-                if (running)
+                if (running || tearingDown)
                 {
                     return;
                 }
+                // Reset here, never at the end of Stop: a worker that outlived a
+                // join timeout must not be able to resume and touch the device.
+                stopping = false;
             }
 
             AutoResetEvent evt = null;
@@ -56,6 +61,7 @@ namespace Murmur.App.Audio
             IntPtr[] hPtrs = null;
             IntPtr[] dPtrs = null;
             Thread worker = null;
+            bool cleanupStarted = false;
 
             try
             {
@@ -91,14 +97,15 @@ namespace Murmur.App.Audio
                 int headerSize = Marshal.SizeOf(typeof(WAVEHDR));
                 hPtrs = new IntPtr[BufferCount];
                 dPtrs = new IntPtr[BufferCount];
+
                 for (int i = 0; i < BufferCount; i++)
                 {
                     hPtrs[i] = IntPtr.Zero;
                     dPtrs[i] = IntPtr.Zero;
-                }
 
-                for (int i = 0; i < BufferCount; i++)
-                {
+                    IntPtr hdrPtr = Marshal.AllocHGlobal(headerSize);
+                    hPtrs[i] = hdrPtr;
+
                     IntPtr data = Marshal.AllocHGlobal(BufferBytes);
                     dPtrs[i] = data;
 
@@ -111,55 +118,52 @@ namespace Murmur.App.Audio
                     hdr.dwLoops = 0;
                     hdr.lpNext = IntPtr.Zero;
                     hdr.reserved = IntPtr.Zero;
-
-                    IntPtr hdrPtr = Marshal.AllocHGlobal(headerSize);
-                    hPtrs[i] = hdrPtr;
                     Marshal.StructureToPtr(hdr, hdrPtr, false);
 
                     int prep = waveInPrepareHeader(handle, hdrPtr, (uint)headerSize);
                     if (prep != 0)
                     {
-                        throw new InvalidOperationException("Microphone could not be opened (error " + prep + ").");
+                        cleanupStarted = true;
+                        CleanupFailedStart(handle, hPtrs, dPtrs, evt);
+                        RaiseError("Microphone could not be opened (error " + prep + ").");
+                        return;
                     }
 
                     int add = waveInAddBuffer(handle, hdrPtr, (uint)headerSize);
                     if (add != 0)
                     {
-                        try
-                        {
-                            waveInUnprepareHeader(handle, hdrPtr, (uint)headerSize);
-                        }
-                        catch
-                        {
-                        }
-                        throw new InvalidOperationException("Microphone could not be opened (error " + add + ").");
+                        cleanupStarted = true;
+                        CleanupFailedStart(handle, hPtrs, dPtrs, evt);
+                        RaiseError("Microphone could not be opened (error " + add + ").");
+                        return;
                     }
                 }
 
                 int startResult = waveInStart(handle);
                 if (startResult != 0)
                 {
-                    throw new InvalidOperationException("Microphone could not be opened (error " + startResult + ").");
+                    cleanupStarted = true;
+                    CleanupFailedStart(handle, hPtrs, dPtrs, evt);
+                    RaiseError("Microphone could not be opened (error " + startResult + ").");
+                    return;
                 }
 
-                bool abandoned = false;
+                Thread candidate = new Thread(WorkerLoop);
+                candidate.IsBackground = true;
+                candidate.Name = "MicLevelMeter";
+
+                bool abandoned;
                 lock (gate)
                 {
-                    if (disposed || running)
-                    {
-                        abandoned = true;
-                    }
-                    else
+                    abandoned = disposed || running;
+                    if (!abandoned)
                     {
                         waveHandle = handle;
                         readyEvent = evt;
                         headerPtrs = hPtrs;
                         dataPtrs = dPtrs;
-                        stopping = false;
                         lastLevelTick = 0;
-                        worker = new Thread(WorkerLoop);
-                        worker.IsBackground = true;
-                        worker.Name = "MicLevelMeter";
+                        worker = candidate;
                         workerThread = worker;
                         running = true;
                         handle = IntPtr.Zero;
@@ -171,70 +175,8 @@ namespace Murmur.App.Audio
 
                 if (abandoned)
                 {
-                    int headerSize2 = Marshal.SizeOf(typeof(WAVEHDR));
-                    if (hPtrs != null)
-                    {
-                        for (int i = 0; i < hPtrs.Length; i++)
-                        {
-                            IntPtr hp = hPtrs[i];
-                            if (hp != IntPtr.Zero)
-                            {
-                                if (handle != IntPtr.Zero)
-                                {
-                                    try
-                                    {
-                                        waveInUnprepareHeader(handle, hp, (uint)headerSize2);
-                                    }
-                                    catch
-                                    {
-                                    }
-                                }
-                                try
-                                {
-                                    Marshal.FreeHGlobal(hp);
-                                }
-                                catch
-                                {
-                                }
-                            }
-                        }
-                    }
-                    if (dPtrs != null)
-                    {
-                        for (int i = 0; i < dPtrs.Length; i++)
-                        {
-                            if (dPtrs[i] != IntPtr.Zero)
-                            {
-                                try
-                                {
-                                    Marshal.FreeHGlobal(dPtrs[i]);
-                                }
-                                catch
-                                {
-                                }
-                            }
-                        }
-                    }
-                    if (handle != IntPtr.Zero)
-                    {
-                        try
-                        {
-                            waveInClose(handle);
-                        }
-                        catch
-                        {
-                        }
-                    }
-                    if (evt != null)
-                    {
-                        try
-                        {
-                            evt.Close();
-                        }
-                        catch
-                        {
-                        }
-                    }
+                    cleanupStarted = true;
+                    CleanupFailedStart(handle, hPtrs, dPtrs, evt);
                     return;
                 }
 
@@ -257,69 +199,9 @@ namespace Murmur.App.Audio
             }
             catch (Exception)
             {
-                if (hPtrs != null)
+                if (!cleanupStarted)
                 {
-                    int headerSize3 = Marshal.SizeOf(typeof(WAVEHDR));
-                    for (int i = 0; i < hPtrs.Length; i++)
-                    {
-                        IntPtr hp = hPtrs[i];
-                        if (hp != IntPtr.Zero)
-                        {
-                            if (handle != IntPtr.Zero)
-                            {
-                                try
-                                {
-                                    waveInUnprepareHeader(handle, hp, (uint)headerSize3);
-                                }
-                                catch
-                                {
-                                }
-                            }
-                            try
-                            {
-                                Marshal.FreeHGlobal(hp);
-                            }
-                            catch
-                            {
-                            }
-                        }
-                    }
-                }
-                if (dPtrs != null)
-                {
-                    for (int i = 0; i < dPtrs.Length; i++)
-                    {
-                        if (dPtrs[i] != IntPtr.Zero)
-                        {
-                            try
-                            {
-                                Marshal.FreeHGlobal(dPtrs[i]);
-                            }
-                            catch
-                            {
-                            }
-                        }
-                    }
-                }
-                if (handle != IntPtr.Zero)
-                {
-                    try
-                    {
-                        waveInClose(handle);
-                    }
-                    catch
-                    {
-                    }
-                }
-                if (evt != null)
-                {
-                    try
-                    {
-                        evt.Close();
-                    }
-                    catch
-                    {
-                    }
+                    CleanupFailedStart(handle, hPtrs, dPtrs, evt);
                 }
                 RaiseError("Microphone could not be opened.");
             }
@@ -327,11 +209,39 @@ namespace Murmur.App.Audio
 
         public void Stop()
         {
-            IntPtr handle = IntPtr.Zero;
-            Thread worker = null;
-            AutoResetEvent evt = null;
-            IntPtr[] hPtrs = null;
-            IntPtr[] dPtrs = null;
+            lock (gate)
+            {
+                if (tearingDown)
+                {
+                    return;
+                }
+                if (!running)
+                {
+                    return;
+                }
+                tearingDown = true;
+            }
+
+            try
+            {
+                StopCore();
+            }
+            finally
+            {
+                lock (gate)
+                {
+                    tearingDown = false;
+                }
+            }
+        }
+
+        private void StopCore()
+        {
+            IntPtr handle;
+            Thread worker;
+            AutoResetEvent evt;
+            IntPtr[] hPtrs;
+            IntPtr[] dPtrs;
 
             lock (gate)
             {
@@ -347,14 +257,8 @@ namespace Murmur.App.Audio
                 dPtrs = dataPtrs;
             }
 
-            try
-            {
-                waveInReset(handle);
-            }
-            catch
-            {
-            }
-
+            // Wake the worker first; it must be gone before waveInReset so it
+            // cannot call waveInAddBuffer on buffers that are being returned.
             if (evt != null)
             {
                 try
@@ -366,15 +270,38 @@ namespace Murmur.App.Audio
                 }
             }
 
+            bool joined = true;
             if (worker != null && Thread.CurrentThread != worker)
             {
                 try
                 {
-                    worker.Join(2000);
+                    joined = worker.Join(JoinTimeoutMs);
                 }
-                catch
+                catch (ThreadStateException)
                 {
+                    // Never started, so it cannot be touching the device.
+                    joined = true;
                 }
+                catch (Exception)
+                {
+                    joined = false;
+                }
+            }
+
+            if (!joined)
+            {
+                // The worker may still own the headers. Reset/close/free could
+                // pull memory out from under it, so leave the whole device leaked.
+                RaiseError("Microphone meter did not stop; the audio device was left open.");
+                return;
+            }
+
+            try
+            {
+                waveInReset(handle);
+            }
+            catch
+            {
             }
 
             int headerSize = Marshal.SizeOf(typeof(WAVEHDR));
@@ -382,62 +309,16 @@ namespace Murmur.App.Audio
             {
                 for (int i = 0; i < hPtrs.Length; i++)
                 {
-                    IntPtr hp = hPtrs[i];
-                    if (hp == IntPtr.Zero)
+                    IntPtr dataPtr = IntPtr.Zero;
+                    if (dPtrs != null && i < dPtrs.Length)
                     {
-                        continue;
+                        dataPtr = dPtrs[i];
                     }
-                    try
-                    {
-                        waveInUnprepareHeader(handle, hp, (uint)headerSize);
-                    }
-                    catch
-                    {
-                    }
+                    ReleaseBuffer(handle, hPtrs[i], dataPtr, headerSize);
                 }
             }
 
-            try
-            {
-                waveInClose(handle);
-            }
-            catch
-            {
-            }
-
-            if (hPtrs != null)
-            {
-                for (int i = 0; i < hPtrs.Length; i++)
-                {
-                    if (hPtrs[i] != IntPtr.Zero)
-                    {
-                        try
-                        {
-                            Marshal.FreeHGlobal(hPtrs[i]);
-                        }
-                        catch
-                        {
-                        }
-                    }
-                }
-            }
-
-            if (dPtrs != null)
-            {
-                for (int i = 0; i < dPtrs.Length; i++)
-                {
-                    if (dPtrs[i] != IntPtr.Zero)
-                    {
-                        try
-                        {
-                            Marshal.FreeHGlobal(dPtrs[i]);
-                        }
-                        catch
-                        {
-                        }
-                    }
-                }
-            }
+            CloseDevice(handle);
 
             if (evt != null)
             {
@@ -458,7 +339,6 @@ namespace Murmur.App.Audio
                 readyEvent = null;
                 headerPtrs = null;
                 dataPtrs = null;
-                stopping = false;
             }
         }
 
@@ -482,6 +362,130 @@ namespace Murmur.App.Audio
             {
             }
             GC.SuppressFinalize(this);
+        }
+
+        private void CleanupFailedStart(IntPtr handle, IntPtr[] hPtrs, IntPtr[] dPtrs, AutoResetEvent evt)
+        {
+            int headerSize = Marshal.SizeOf(typeof(WAVEHDR));
+            if (handle != IntPtr.Zero)
+            {
+                try
+                {
+                    waveInReset(handle);
+                }
+                catch
+                {
+                }
+
+                if (hPtrs != null)
+                {
+                    for (int i = 0; i < hPtrs.Length; i++)
+                    {
+                        IntPtr dataPtr = IntPtr.Zero;
+                        if (dPtrs != null && i < dPtrs.Length)
+                        {
+                            dataPtr = dPtrs[i];
+                        }
+                        ReleaseBuffer(handle, hPtrs[i], dataPtr, headerSize);
+                    }
+                }
+
+                CloseDevice(handle);
+            }
+
+            if (evt != null)
+            {
+                try
+                {
+                    evt.Close();
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private static void ReleaseBuffer(IntPtr handle, IntPtr headerPtr, IntPtr dataPtr, int headerSize)
+        {
+            if (headerPtr == IntPtr.Zero)
+            {
+                return;
+            }
+
+            int result = UnprepareWithRetry(handle, headerPtr, headerSize);
+            if (!MeterTeardown.MayFreeBuffer(result))
+            {
+                // The driver may still reference this block; leak it rather
+                // than free memory we do not own.
+                return;
+            }
+
+            try
+            {
+                Marshal.FreeHGlobal(headerPtr);
+            }
+            catch
+            {
+            }
+
+            if (dataPtr != IntPtr.Zero)
+            {
+                try
+                {
+                    Marshal.FreeHGlobal(dataPtr);
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private static int UnprepareWithRetry(IntPtr handle, IntPtr headerPtr, int headerSize)
+        {
+            int result = CallUnprepareHeader(handle, headerPtr, headerSize);
+            int retries = 0;
+            while (MeterTeardown.ShouldRetryUnprepare(result, retries))
+            {
+                Thread.Sleep(MeterTeardown.RetryDelayMs);
+                result = CallUnprepareHeader(handle, headerPtr, headerSize);
+                retries++;
+            }
+            return result;
+        }
+
+        private static int CallUnprepareHeader(IntPtr handle, IntPtr headerPtr, int headerSize)
+        {
+            try
+            {
+                return waveInUnprepareHeader(handle, headerPtr, (uint)headerSize);
+            }
+            catch (Exception)
+            {
+                return -1;
+            }
+        }
+
+        private void CloseDevice(IntPtr handle)
+        {
+            if (handle == IntPtr.Zero)
+            {
+                return;
+            }
+
+            int result = -1;
+            try
+            {
+                result = waveInClose(handle);
+            }
+            catch (Exception)
+            {
+                result = -1;
+            }
+
+            if (result != 0)
+            {
+                RaiseError("Microphone could not be closed (error " + result + ").");
+            }
         }
 
         private void WorkerLoop()
