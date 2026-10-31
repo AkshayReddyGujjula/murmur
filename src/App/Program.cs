@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
@@ -16,6 +17,9 @@ namespace Murmur.App
 {
     internal static class Program
     {
+        [DllImport("shcore.dll")] private static extern int SetProcessDpiAwareness(int value);
+        [DllImport("user32.dll")] private static extern bool SetProcessDPIAware();
+
         [STAThread]
         public static int Main(string[] args)
         {
@@ -39,6 +43,7 @@ namespace Murmur.App
                     }
                     try
                     {
+                        EnableDpiAwareness();
                         Application.EnableVisualStyles();
                         Application.SetCompatibleTextRenderingDefault(false);
                         using (TrayApp tray = new TrayApp()) { tray.Start(); Application.Run(); }
@@ -47,6 +52,16 @@ namespace Murmur.App
                     finally { probe.ReleaseMutex(); }
                 }
             }
+        }
+
+        // System DPI awareness keeps the overlay crisp at 125%/150% scaling while WinForms
+        // menus still scale their point-sized fonts.
+        private static void EnableDpiAwareness()
+        {
+            try { if (SetProcessDpiAwareness(1) == 0) return; }
+            catch (DllNotFoundException) { }
+            catch (EntryPointNotFoundException) { }
+            try { SetProcessDPIAware(); } catch (EntryPointNotFoundException) { }
         }
 
         private static int ExportPrompt(string promptPath)
@@ -66,7 +81,7 @@ namespace Murmur.App
 
     internal sealed class TrayApp : IDisposable
     {
-        private readonly string _dataDir, _settingsPath, _claudePath;
+        private readonly string _dataDir, _settingsPath, _historyPath, _claudePath;
         private readonly AppLog _log;
         private readonly AppSettings _settings;
         private readonly TranscriptHistory _history;
@@ -77,9 +92,13 @@ namespace Murmur.App
         private readonly System.Windows.Forms.Timer _idleTimer;
         private TrayIcon _tray;
         private DictationEngine _engine;
-        private bool _takeRequested, _disposed;
+        // _inTake: from the start press until the take is copied, failed, cancelled or discarded.
+        // _awaitingListen: start pressed, Claude not yet confirmed listening.
+        private bool _inTake, _awaitingListen, _disposed;
+        private bool _accountPending, _accountLogin;
         private DateTime _lastActivityUtc = DateTime.UtcNow;
         private Process _accountProcess;
+        private string _lastTranscript; // in-memory fallback when copying fails and history is off
 
         public TrayApp()
         {
@@ -87,10 +106,13 @@ namespace Murmur.App
             _dataDir = Path.Combine(exeDir, "data", "app");
             Directory.CreateDirectory(_dataDir);
             _settingsPath = Path.Combine(_dataDir, "settings.ini");
+            _historyPath = Path.Combine(_dataDir, "history.dat");
             _log = new AppLog(Path.Combine(_dataDir, "murmur.log"));
             _settings = AppSettings.Load(_settingsPath);
-            _history = new TranscriptHistory(Path.Combine(_dataDir, "history.dat"), _settings.HistoryLimit);
+            if (!_settings.KeepHistory) TranscriptHistory.DeleteFile(_historyPath);
+            _history = new TranscriptHistory(_historyPath, _settings.HistoryLimit);
             _claudePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "bin", "claude.exe");
+            PruneStaleHandoffs(Path.Combine(exeDir, "data", "feasibility-v1", "sessions"));
             _ui = new Control();
             _ui.CreateControl();
             IntPtr force = _ui.Handle; // ensure the marshalling handle exists on the UI thread
@@ -111,6 +133,7 @@ namespace Murmur.App
         public void Start()
         {
             _log.Info("Murmur started.");
+            CreateEngine(); // before the tray: the tray builds its menu from engine state
             _tray = new TrayIcon(BuildMenu);
             _tray.SetState(false, "Murmur");
             if (!_hotkeys.Register(_settings.Hotkey))
@@ -120,8 +143,7 @@ namespace Murmur.App
                 _tray.Notify("Claude Code not found", "Expected " + _claudePath);
                 _log.Info("claude.exe not found at the default path.");
             }
-            CreateEngine();
-            if (_settings.Engine != EngineMode.OnDemand) _engine.Warm();
+            if (_settings.Engine != EngineMode.OnDemand) WarmEngine();
             _idleTimer.Start();
         }
 
@@ -135,6 +157,7 @@ namespace Murmur.App
             _engine.StateChanged += delegate(EngineState state) { Post(delegate { OnEngineState(state); }); };
             _engine.TranscriptReady += delegate(string text) { Post(delegate { OnTranscript(text); }); };
             _engine.Failed += delegate(string message) { Post(delegate { OnFailed(message); }); };
+            _engine.Discarded += delegate { Post(delegate { OnDiscarded(); }); };
             _engine.Diagnostic += delegate(string line) { _log.Info(line); };
         }
 
@@ -144,51 +167,68 @@ namespace Murmur.App
             try { _ui.BeginInvoke(action); } catch (InvalidOperationException) { }
         }
 
-        // ---- Hotkey flow: press = start, press again = stop; Esc cancels. ----
+        private void WarmEngine()
+        {
+            if (AccountBusy()) return;
+            _lastActivityUtc = DateTime.UtcNow;
+            _engine.Warm();
+        }
+
+        private bool AccountBusy()
+        {
+            return _accountPending || (_accountProcess != null && !_accountProcess.HasExited);
+        }
+
+        // ---- Take flow: press = start, press again = stop; Esc cancels at any point. ----
 
         private void OnHotkey()
         {
             _lastActivityUtc = DateTime.UtcNow;
             EngineState state = _engine.State;
-            if (state == EngineState.Recording)
+            if (!_inTake)
             {
-                _takeRequested = false;
-                _mic.Stop();
-                SetCancelKey(false);
-                _overlay.ShowMode(OverlayMode.Working, "");
-                if (_settings.Sounds) Chimes.Play(Chime.Stop);
-                _engine.EndTake();
-                _log.Info("Take stopped by shortcut.");
-            }
-            else if (_takeRequested)
-            {
-                OnCancel(); // pressed again before Claude started listening
-            }
-            else if (state == EngineState.Finalizing)
-            {
-                // Still finishing the previous take; ignore.
-            }
-            else
-            {
+                if (AccountBusy()) { _overlay.ShowMode(OverlayMode.Error, "Finish the Claude sign-in window first"); return; }
                 if (!File.Exists(_claudePath)) { _overlay.ShowMode(OverlayMode.Error, "Claude Code not found"); return; }
-                _takeRequested = true;
+                _inTake = true;
+                _awaitingListen = true;
                 SetCancelKey(true);
                 _overlay.ShowMode(OverlayMode.Starting, "");
-                _mic.Start();
                 _engine.BeginTake();
                 _log.Info("Take requested (engine " + state + ").");
+                return;
             }
+            if (state == EngineState.Finalizing || !_awaitingListen && state != EngineState.Recording)
+                return; // already stopping; Esc still cancels
+            if (_awaitingListen && (state == EngineState.Starting || state == EngineState.Stopped || state == EngineState.Faulted))
+            {
+                OnCancel(); // Claude never started listening; nothing was said
+                return;
+            }
+            // Recording, or hold already started but "listening" not yet seen: finalize normally.
+            _awaitingListen = false;
+            _mic.Stop();
+            _overlay.ShowMode(OverlayMode.Working, "");
+            if (_settings.Sounds) Chimes.Play(Chime.Stop);
+            _engine.EndTake();
+            _log.Info("Take stopped by shortcut.");
         }
 
         private void OnCancel()
         {
-            if (!_takeRequested && _engine.State != EngineState.Recording) return;
-            _takeRequested = false;
+            if (!_inTake) return;
+            _engine.CancelTake();
+            EndTakeUi(true);
+            _log.Info("Take cancelled.");
+            if (_settings.Engine == EngineMode.OnDemand) _engine.Unload();
+        }
+
+        private void EndTakeUi(bool hideOverlay)
+        {
+            _inTake = false;
+            _awaitingListen = false;
             _mic.Stop();
             SetCancelKey(false);
-            _engine.CancelTake();
-            _overlay.ShowMode(OverlayMode.Hidden, "");
-            _log.Info("Take cancelled.");
+            if (hideOverlay) _overlay.ShowMode(OverlayMode.Hidden, "");
         }
 
         private void SetCancelKey(bool active) { _hotkeys.SetCancelActive(active && _settings.EscapeCancels); }
@@ -197,35 +237,48 @@ namespace Murmur.App
         {
             _log.Info("Engine " + state + ".");
             bool recording = state == EngineState.Recording;
-            if (_tray != null) _tray.SetState(recording, "Murmur — " + StatusText(state));
-            if (recording && _takeRequested)
+            if (_tray != null) _tray.SetState(recording, "Murmur - " + StatusText(state));
+            if (recording && _inTake && _awaitingListen)
             {
-                _takeRequested = false;
+                _awaitingListen = false;
                 _overlay.ShowMode(OverlayMode.Recording, "");
+                _mic.Start(); // the meter only runs while Claude is actually listening
                 if (_settings.Sounds) Chimes.Play(Chime.Start);
             }
+            else if (!recording) _mic.Stop();
+            if ((state == EngineState.Stopped || state == EngineState.Faulted) && _inTake)
+                EndTakeUi(true); // engine went away without a result
+            if (state == EngineState.Stopped && _accountPending) LaunchAccountWindow();
         }
 
         private void OnTranscript(string text)
         {
             _lastActivityUtc = DateTime.UtcNow;
+            EndTakeUi(false);
+            if (_settings.KeepHistory) _history.Add(text);
+            else _lastTranscript = text;
             string error;
-            if (!ClipboardWriter.TrySetText(text, out error))
+            if (ClipboardWriter.TrySetText(text, out error))
+            {
+                _log.Info("Copied transcript (" + text.Length + " chars).");
+                _overlay.ShowMode(OverlayMode.Done, "Copied");
+                if (_settings.AutoPaste)
+                {
+                    System.Windows.Forms.Timer paste = new System.Windows.Forms.Timer();
+                    paste.Interval = 120;
+                    paste.Tick += delegate {
+                        paste.Stop(); paste.Dispose();
+                        string pasteError;
+                        if (!AutoPaste.TrySendCtrlV(out pasteError)) _log.Info("Auto-paste failed: " + pasteError);
+                    };
+                    paste.Start();
+                }
+            }
+            else
             {
                 _log.Info("Clipboard write failed: " + error);
-                _overlay.ShowMode(OverlayMode.Error, "Couldn't copy — text saved in Recent");
-                if (_settings.KeepHistory) _history.Add(text);
-                return;
-            }
-            if (_settings.KeepHistory) _history.Add(text);
-            _log.Info("Copied transcript (" + text.Length + " chars).");
-            _overlay.ShowMode(OverlayMode.Done, "Copied");
-            if (_settings.AutoPaste)
-            {
-                System.Windows.Forms.Timer paste = new System.Windows.Forms.Timer();
-                paste.Interval = 120;
-                paste.Tick += delegate { paste.Stop(); paste.Dispose(); AutoPaste.SendCtrlV(); };
-                paste.Start();
+                _overlay.ShowMode(OverlayMode.Error, "Couldn't copy - open Recent in the tray menu");
+                if (_settings.Sounds) Chimes.Play(Chime.Error);
             }
             if (_settings.Engine == EngineMode.OnDemand) _engine.Unload();
         }
@@ -233,11 +286,9 @@ namespace Murmur.App
         private void OnFailed(string message)
         {
             _log.Info("Failed: " + message);
-            bool inTake = _takeRequested || _overlay.Visible;
-            _takeRequested = false;
-            _mic.Stop();
-            SetCancelKey(false);
-            if (inTake)
+            bool visible = _inTake || _overlay.IsShowing;
+            EndTakeUi(false);
+            if (visible)
             {
                 _overlay.ShowMode(OverlayMode.Error, message);
                 if (_settings.Sounds) Chimes.Play(Chime.Error);
@@ -246,9 +297,15 @@ namespace Murmur.App
             if (_settings.Engine == EngineMode.OnDemand) _engine.Unload();
         }
 
+        private void OnDiscarded()
+        {
+            if (_inTake || _overlay.Mode == OverlayMode.Working || _overlay.Mode == OverlayMode.Starting)
+                EndTakeUi(true);
+        }
+
         private void CheckIdle()
         {
-            if (_settings.Engine != EngineMode.UnloadWhenIdle || _engine.State != EngineState.Ready) return;
+            if (_inTake || _settings.Engine != EngineMode.UnloadWhenIdle || _engine.State != EngineState.Ready) return;
             if ((DateTime.UtcNow - _lastActivityUtc).TotalMinutes >= _settings.IdleUnloadMinutes)
             {
                 _log.Info("Unloading Claude after idle period.");
@@ -261,9 +318,9 @@ namespace Murmur.App
             switch (state)
             {
                 case EngineState.Ready: return "Ready";
-                case EngineState.Starting: return "Starting Claude…";
+                case EngineState.Starting: return "Starting Claude...";
                 case EngineState.Recording: return "Listening";
-                case EngineState.Finalizing: return "Transcribing…";
+                case EngineState.Finalizing: return "Transcribing...";
                 case EngineState.Faulted: return "Needs attention";
                 default: return "Sleeping (starts on shortcut)";
             }
@@ -274,27 +331,27 @@ namespace Murmur.App
         private List<TrayItem> BuildMenu()
         {
             List<TrayItem> menu = new List<TrayItem>();
-            menu.Add(Header("Murmur · " + StatusText(_engine.State)));
+            menu.Add(Header("Murmur  ·  " + StatusText(_engine.State)));
             menu.Add(Header(GlobalHotkeys.Label(_settings.Hotkey) + " to dictate"));
             menu.Add(Separator());
 
             TrayItem recent = Item("Recent", null);
-            IList<HistoryEntry> items = _history.Items;
-            if (!_settings.KeepHistory) recent.Children.Add(Header("History is off"));
-            else if (items.Count == 0) recent.Children.Add(Header("Nothing yet"));
-            for (int i = 0; i < items.Count && i < 12; i++)
+            if (_settings.KeepHistory)
             {
-                string text = items[i].Text;
-                recent.Children.Add(Item(Preview(text) + "   " + Ago(items[i].TimeUtc), delegate {
-                    string error;
-                    if (ClipboardWriter.TrySetText(text, out error)) _overlay.ShowMode(OverlayMode.Done, "Copied");
-                    else _overlay.ShowMode(OverlayMode.Error, "Couldn't copy");
-                }));
+                IList<HistoryEntry> items = _history.Items;
+                if (items.Count == 0) recent.Children.Add(Header("Nothing yet"));
+                for (int i = 0; i < items.Count && i < 12; i++)
+                    recent.Children.Add(CopyItem(items[i].Text, Ago(items[i].TimeUtc)));
+                if (items.Count > 0)
+                {
+                    recent.Children.Add(Separator());
+                    recent.Children.Add(Item("Clear history", delegate { _history.Clear(); _log.Info("History cleared."); }));
+                }
             }
-            if (items.Count > 0)
+            else
             {
-                recent.Children.Add(Separator());
-                recent.Children.Add(Item("Clear history", delegate { _history.Clear(); _log.Info("History cleared."); }));
+                recent.Children.Add(Header("History is off"));
+                if (_lastTranscript != null) recent.Children.Add(CopyItem(_lastTranscript, "last"));
             }
             menu.Add(recent);
             menu.Add(Separator());
@@ -303,9 +360,7 @@ namespace Murmur.App
             foreach (HotkeyChoice choice in new HotkeyChoice[] { HotkeyChoice.CtrlSpace, HotkeyChoice.CtrlShiftSpace, HotkeyChoice.CtrlAltSpace, HotkeyChoice.AltShiftSpace })
             {
                 HotkeyChoice pick = choice;
-                TrayItem option = Item(GlobalHotkeys.Label(choice), delegate { ChangeHotkey(pick); });
-                option.Checked = _settings.Hotkey == choice;
-                shortcut.Children.Add(option);
+                shortcut.Children.Add(Choice(GlobalHotkeys.Label(choice), _settings.Hotkey == choice, delegate { ChangeHotkey(pick); }));
             }
             menu.Add(shortcut);
 
@@ -322,11 +377,14 @@ namespace Murmur.App
             options.Children.Add(Choice("Overlay at top", _settings.Placement == OverlayPlacement.TopCenter, delegate { ChangePlacement(OverlayPlacement.TopCenter); }));
             options.Children.Add(Separator());
             options.Children.Add(Choice("Sounds", _settings.Sounds, delegate { _settings.Sounds = !_settings.Sounds; Save(); }));
-            options.Children.Add(Choice("Esc cancels recording", _settings.EscapeCancels, delegate { _settings.EscapeCancels = !_settings.EscapeCancels; Save(); }));
+            options.Children.Add(Choice("Esc cancels recording", _settings.EscapeCancels, delegate {
+                _settings.EscapeCancels = !_settings.EscapeCancels; Save();
+                SetCancelKey(_inTake);
+            }));
             options.Children.Add(Choice("Paste automatically after copy", _settings.AutoPaste, delegate { _settings.AutoPaste = !_settings.AutoPaste; Save(); }));
             options.Children.Add(Choice("Keep recent history", _settings.KeepHistory, delegate {
                 _settings.KeepHistory = !_settings.KeepHistory;
-                if (!_settings.KeepHistory) _history.Clear();
+                if (!_settings.KeepHistory) { _history.Clear(); TranscriptHistory.DeleteFile(_historyPath); }
                 Save();
             }));
             bool autostart = SafeAutostart();
@@ -337,8 +395,8 @@ namespace Murmur.App
             menu.Add(options);
 
             TrayItem account = Item("Account", null);
-            account.Children.Add(Item("Sign in to Claude…", delegate { RunAccount(true); }));
-            account.Children.Add(Item("Run Claude first-time setup…", delegate { RunAccount(false); }));
+            account.Children.Add(Item("Sign in to Claude...", delegate { RequestAccount(true); }));
+            account.Children.Add(Item("Run Claude first-time setup...", delegate { RequestAccount(false); }));
             menu.Add(account);
 
             menu.Add(Item("Open logs folder", delegate {
@@ -349,25 +407,30 @@ namespace Murmur.App
             return menu;
         }
 
+        private TrayItem CopyItem(string text, string age)
+        {
+            return Item(Preview(text) + "   " + age, delegate {
+                string error;
+                if (ClipboardWriter.TrySetText(text, out error)) _overlay.ShowMode(OverlayMode.Done, "Copied");
+                else _overlay.ShowMode(OverlayMode.Error, "Couldn't copy");
+            });
+        }
+
         private bool SafeAutostart() { try { return Autostart.IsEnabled(); } catch (Exception) { return false; } }
 
         private void ChangeHotkey(HotkeyChoice choice)
         {
-            HotkeyChoice previous = _settings.Hotkey;
+            // Register keeps the previous shortcut active if the new one is taken.
             if (_hotkeys.Register(choice)) { _settings.Hotkey = choice; Save(); }
-            else
-            {
-                _hotkeys.Register(previous);
-                _tray.Notify("Shortcut unavailable", GlobalHotkeys.Label(choice) + " is used by another app.");
-            }
+            else _tray.Notify("Shortcut unavailable", GlobalHotkeys.Label(choice) + " is used by another app. Keeping " + GlobalHotkeys.Label(_settings.Hotkey) + ".");
         }
 
         private void ChangeEngine(EngineMode mode)
         {
             _settings.Engine = mode; Save();
             _lastActivityUtc = DateTime.UtcNow;
-            if (mode == EngineMode.AlwaysReady) _engine.Warm();
-            else if (mode == EngineMode.OnDemand && _engine.State == EngineState.Ready) _engine.Unload();
+            if (mode == EngineMode.AlwaysReady) WarmEngine();
+            else if (mode == EngineMode.OnDemand && !_inTake && _engine.State == EngineState.Ready) _engine.Unload();
         }
 
         private void ChangePlacement(OverlayPlacement placement)
@@ -378,27 +441,36 @@ namespace Murmur.App
 
         private void RestartEngine()
         {
-            _takeRequested = false;
-            _mic.Stop();
-            SetCancelKey(false);
-            _overlay.ShowMode(OverlayMode.Hidden, "");
+            if (_inTake) _engine.CancelTake();
+            EndTakeUi(true);
             _engine.Unload();
-            if (_settings.Engine != EngineMode.OnDemand) _engine.Warm();
+            if (_settings.Engine != EngineMode.OnDemand) WarmEngine();
             _log.Info("Engine restarted from menu.");
         }
 
-        // Opens a visible console that runs Claude's own sign-in (or interactive first-run
-        // setup) against Murmur's separate profile. Murmur never reads the credentials.
-        private void RunAccount(bool login)
+        // Sign-in/setup runs Claude's own console UI against Murmur's separate profile. The
+        // dictation child is stopped first so the two never share the profile at once.
+        private void RequestAccount(bool login)
         {
-            if (_accountProcess != null && !_accountProcess.HasExited) return;
+            if (AccountBusy()) return;
             if (!File.Exists(_claudePath)) { _tray.Notify("Claude Code not found", _claudePath); return; }
-            _engine.Unload();
-            ProfileSession session = new ProfileSession();
+            if (_inTake) _engine.CancelTake();
+            EndTakeUi(true);
+            _accountPending = true;
+            _accountLogin = login;
+            if (_engine.State == EngineState.Stopped) LaunchAccountWindow();
+            else _engine.Unload(); // continues in OnEngineState(Stopped)
+        }
+
+        private void LaunchAccountWindow()
+        {
+            _accountPending = false;
+            ProfileSession session = null;
             try
             {
+                session = new ProfileSession();
                 StringBuilder arguments = new StringBuilder();
-                if (login) arguments.Append("auth login");
+                if (_accountLogin) arguments.Append("auth login");
                 else foreach (string argument in session.Arguments) { if (arguments.Length > 0) arguments.Append(' '); arguments.Append(Murmur.Transport.OwnedTerminal.QuoteArgument(argument)); }
                 ProcessStartInfo info = new ProcessStartInfo(_claudePath, arguments.ToString());
                 info.UseShellExecute = false;
@@ -407,20 +479,50 @@ namespace Murmur.App
                 foreach (KeyValuePair<string, string> entry in session.Environment)
                     if (entry.Value == null) info.EnvironmentVariables.Remove(entry.Key);
                     else info.EnvironmentVariables[entry.Key] = entry.Value;
+                ProfileSession owned = session;
                 _accountProcess = Process.Start(info);
+                session = null;
                 _accountProcess.EnableRaisingEvents = true;
                 _accountProcess.Exited += delegate {
-                    session.Dispose();
-                    Post(delegate { if (_settings.Engine != EngineMode.OnDemand) _engine.Warm(); });
+                    owned.Dispose();
+                    Post(delegate {
+                        _log.Info("Claude account window closed.");
+                        if (_settings.Engine != EngineMode.OnDemand) WarmEngine();
+                    });
                 };
-                _log.Info(login ? "Opened Claude sign-in." : "Opened Claude first-time setup.");
+                _log.Info(_accountLogin ? "Opened Claude sign-in." : "Opened Claude first-time setup.");
             }
             catch (Exception error)
             {
-                session.Dispose();
+                if (session != null) session.Dispose();
+                _accountProcess = null;
                 _log.Error("Could not open Claude account window.", error);
                 _tray.Notify("Murmur", "Could not open Claude: " + error.Message);
+                if (_settings.Engine != EngineMode.OnDemand) WarmEngine();
             }
+        }
+
+        // A crash between Claude's export and Murmur's read could leave a plaintext handoff file
+        // in an old session folder. Remove only those exact Murmur-created files.
+        private void PruneStaleHandoffs(string sessionsRoot)
+        {
+            try
+            {
+                if (!Directory.Exists(sessionsRoot)) return;
+                foreach (string directory in Directory.GetDirectories(sessionsRoot))
+                {
+                    if ((File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0) continue;
+                    foreach (string file in Directory.GetFiles(directory, "handoff.txt*"))
+                    {
+                        string name = Path.GetFileName(file);
+                        if (name == "handoff.txt" || name.EndsWith(".staging", StringComparison.OrdinalIgnoreCase))
+                        {
+                            try { File.Delete(file); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+                        }
+                    }
+                }
+            }
+            catch (Exception error) { _log.Error("Stale handoff cleanup failed.", error); }
         }
 
         private void Save()
@@ -436,7 +538,7 @@ namespace Murmur.App
 
         private static string Preview(string text)
         {
-            string flat = text.Replace("\r", " ").Replace("\n", " ").Trim();
+            string flat = text.Replace("\r", " ").Replace("\n", " ").Replace("\t", " ").Trim();
             return flat.Length <= 46 ? flat : flat.Substring(0, 45).TrimEnd() + "…";
         }
 
@@ -453,11 +555,17 @@ namespace Murmur.App
         {
             if (_disposed) return;
             _disposed = true;
+            _overlay.ShowMode(OverlayMode.Hidden, "");
             _idleTimer.Stop(); _idleTimer.Dispose();
             _hotkeys.Dispose();
             _mic.Dispose();
-            if (_engine != null) _engine.Dispose();
-            if (_tray != null) _tray.Dispose();
+            if (_tray != null) _tray.Dispose(); // icon disappears immediately
+            if (_engine != null) _engine.Dispose(); // closes the owned Claude child (bounded wait)
+            if (_accountProcess != null)
+            {
+                try { if (!_accountProcess.HasExited) _accountProcess.Kill(); } catch (Exception) { }
+                _accountProcess.Dispose();
+            }
             _overlay.Dispose();
             _ui.Dispose();
             _log.Info("Murmur exited.");
