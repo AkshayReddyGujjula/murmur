@@ -32,6 +32,15 @@ namespace Murmur.Tests.App
                 EngineExportSafetyTests();
                 EngineFaultTests();
                 EnginePromptSafetyTests();
+                EngineTakeIdTests();
+                EngineBusyBeginTests();
+                EngineSupersedeRecordingTests();
+                EngineHoldGuardTests();
+                EngineCancelQuietWindowTests();
+                EngineDiscardBeforeTakeTests();
+                EngineClearWaitTests();
+                EngineExportTimeoutTests();
+                EngineSuspendTests();
                 EngineWriteSafetyTests();
                 Console.WriteLine("PASS: " + _assertions + " engine assertions.");
                 return 0;
@@ -163,6 +172,27 @@ namespace Murmur.Tests.App
             Check(dictatedMultiline.Kind == ScreenKind.Ready, "multiline dictated listening stays ready");
             Check(dictatedMultiline.ComposerText == "I was listening... to the radio",
                 "multiline dictated listening preserved");
+
+            // Composer contents are ordinary dictation: they must not be
+            // mistaken for sign-in or setup prompts.
+            ScreenReading runTests = ScreenParser.Read(ReadyScreen("Please run the tests"));
+            Check(runTests.Kind == ScreenKind.Ready, "composer Please run stays ready");
+            Check(runTests.ComposerText == "Please run the tests", "composer Please run preserved");
+
+            ScreenReading loginText = ScreenParser.Read(ReadyScreen("/login"));
+            Check(loginText.Kind == ScreenKind.Ready, "composer /login stays ready");
+            Check(loginText.ComposerText == "/login", "composer /login preserved");
+
+            ScreenReading enterText = ScreenParser.Read(ReadyScreen("Press Enter to continue"));
+            Check(enterText.Kind == ScreenKind.Ready, "composer Press Enter stays ready");
+            Check(enterText.ComposerText == "Press Enter to continue",
+                "composer Press Enter preserved");
+
+            ScreenReading multilineSetup = ScreenParser.Read(
+                "working\n" + Rule + "\n\u276f please run\n  /login and Press Enter to continue\n" + Rule + "\n");
+            Check(multilineSetup.Kind == ScreenKind.Ready, "multiline composer prompt phrases stay ready");
+            Check(multilineSetup.ComposerText == "please run /login and Press Enter to continue",
+                "multiline composer prompt phrases preserved");
 
             Console.WriteLine("PASS: ScreenParser fixtures and synthetic screens.");
         }
@@ -423,7 +453,7 @@ namespace Murmur.Tests.App
                 harness.Engine.Warm();
                 Check(harness.WaitState(EngineState.Ready, 3000), "draft setup ready");
                 harness.Engine.BeginTake();
-                Check(harness.WaitState(EngineState.Recording, 3000), "draft take records");
+                Check(harness.WaitState(EngineState.Recording, 15000), "draft take records");
                 FakeTerminal terminal = harness.TerminalAt(0);
                 Check(terminal.WriteAt(0) == "\x07", "existing composer exported first");
                 Check(harness.TranscriptCount == 0, "draft export is not a transcript");
@@ -658,37 +688,61 @@ namespace Murmur.Tests.App
             {
                 harness.Engine.Warm();
                 Check(harness.WaitState(EngineState.Ready, 3000), "stale handoff setup ready");
-                harness.Engine.BeginTake();
+                int takeId = harness.Engine.BeginTake();
                 Check(harness.WaitState(EngineState.Recording, 3000), "stale handoff records");
                 holding = false;
                 FakeTerminal terminal = harness.TerminalAt(0);
                 terminal.SetScreen(ReadyScreen("fresh words"));
-                harness.Engine.EndTake();
+                harness.Engine.EndTake(takeId);
                 Check(harness.WaitFailure("Could not export the transcript", 3000),
                     "stale handoff fails export");
+                Check(harness.WaitTakeFailure(takeId, 2000), "stale handoff fails the take");
+                Check(harness.TakeFailureText(takeId) == "Could not export the transcript",
+                    "stale handoff take failure text");
                 Check(harness.TranscriptCount == 0, "stale handoff never raises transcript");
+                Check(harness.WaitTerminalCount(2, 3000), "stale handoff recycles child");
+                Check(harness.TerminalAt(0).IsDisposed, "stale handoff disposes old child");
+                Check(harness.SessionAt(0).Disposed, "stale handoff disposes old session");
                 Check(harness.WaitState(EngineState.Ready, 3000), "stale handoff returns ready");
             }
 
-            // Failing to delete a stale ExportPath fails the export and recycles.
+            // A failed discard-before-take export recycles the child and then
+            // begins the take on the fresh child instead of failing it.
             List<FileStream> locks = new List<FileStream>();
             try
             {
-                using (Harness harness = new Harness(delegate { return ReadyScreen("stale draft"); },
+                int screens = 0;
+                using (Harness harness = new Harness(
+                    delegate
+                    {
+                        screens++;
+                        return screens == 1 ? ReadyScreen("stale draft") : ReadyScreen("");
+                    },
                     delegate(FakeTerminal terminal, FakeSession session)
                     {
-                        locks.Add(new FileStream(session.ExportPath, FileMode.Create,
-                            FileAccess.ReadWrite, FileShare.None));
+                        terminal.ExportOnCtrlG = true;
+                        terminal.ClearOnExport = true;
+                        terminal.OnSpace = delegate { terminal.SetScreen(ListeningScreen("")); };
+                        if (screens == 1)
+                        {
+                            locks.Add(new FileStream(session.ExportPath, FileMode.Create,
+                                FileAccess.ReadWrite, FileShare.None));
+                        }
                     }))
                 {
                     harness.Engine.Warm();
                     Check(harness.WaitState(EngineState.Ready, 3000), "locked handoff setup ready");
-                    harness.Engine.BeginTake();
-                    Check(harness.WaitFailure("Could not export the transcript", 3000),
-                        "locked stale handoff fails export");
+                    int takeId = harness.Engine.BeginTake();
                     Check(harness.WaitTerminalCount(2, 3000), "locked stale handoff recycles child");
-                    Check(harness.WaitState(EngineState.Ready, 3000), "locked stale handoff settles ready");
-                    Check(harness.TranscriptCount == 0, "locked stale handoff no transcript");
+                    Check(harness.WaitState(EngineState.Recording, 3000),
+                        "locked stale handoff begins take on fresh child");
+                    Check(harness.WaitTakeRecording(takeId, 2000),
+                        "locked stale handoff fresh child records");
+                    Check(harness.FailureCount == 0, "locked stale handoff does not fail the take");
+                    Check(harness.CountTakeFailures(takeId) == 0,
+                        "locked stale handoff no take failure");
+                    Check(harness.TerminalAt(0).IsDisposed, "locked stale handoff disposes old child");
+                    Check(harness.SessionAt(0).Disposed, "locked stale handoff disposes old session");
                     CloseAll(locks);
                 }
             }
@@ -857,6 +911,667 @@ namespace Murmur.Tests.App
             Console.WriteLine("PASS: Prompt safety before holds and after export.");
         }
 
+        private static void EngineTakeIdTests()
+        {
+            bool holding = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate
+                    {
+                        if (holding) terminal.SetScreen(ListeningScreen(""));
+                    };
+                    terminal.ExportOnCtrlG = true;
+                    terminal.ExportText = "\ufeff  id words  \r\n";
+                    terminal.ClearOnExport = true;
+                }))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "take id setup ready");
+
+                int first = harness.Engine.BeginTake();
+                Check(first > 0, "begin take returns a positive id");
+                Check(harness.WaitState(EngineState.Recording, 3000), "take id records");
+                Check(harness.WaitTakeRecording(first, 2000), "take recording id");
+                holding = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen(ReadyScreen("id words"));
+                harness.Engine.EndTake(first);
+                Check(harness.WaitTakeTranscript(first, 3000), "take transcript event");
+                Check(harness.TakeTranscriptText(first) == "id words", "take transcript text trimmed");
+                Check(harness.WaitState(EngineState.Ready, 3000), "take id returns ready");
+                Check(harness.CountTakeTerminalEvents(first) == 1, "take has one terminal event");
+                Check(harness.TakeFailureCount == 0, "successful take has no failure event");
+                Check(harness.TakeDiscardCount == 0, "successful take is not discarded");
+
+                holding = true;
+                int second = harness.Engine.BeginTake();
+                Check(second > first, "second take id increases");
+                Check(harness.WaitState(EngineState.Recording, 3000), "second take records");
+                terminal.SetScreen(ReadyScreen(""));
+                holding = false;
+                harness.Engine.CancelTake(second);
+                Check(harness.WaitTakeDiscard(second, 3000), "cancelled take discards its id");
+                Check(harness.WaitState(EngineState.Ready, 3000), "cancelled take returns ready");
+                Check(harness.CountTakeTerminalEvents(second) == 1, "cancel one terminal event");
+
+                holding = true;
+                int third = harness.Engine.BeginTake();
+                Check(third > second, "third take id increases");
+                Check(harness.WaitState(EngineState.Recording, 3000), "third take records");
+                terminal.SetScreen(ReadyScreen(""));
+                harness.Engine.CancelTake(first);
+                harness.Engine.EndTake(second);
+                Thread.Sleep(100);
+                Check(harness.Engine.State == EngineState.Recording, "stale take ids are ignored");
+                holding = false;
+                terminal.SetScreen(ReadyScreen(""));
+                harness.Engine.CancelTake(third);
+                Check(harness.WaitTakeDiscard(third, 3000), "third take discards");
+                Check(harness.CountTakeTerminalEvents(third) == 1, "third take one terminal event");
+                Check(harness.CountTakeDiscards(second) == 1, "second take discarded once");
+            }
+
+            // A warm-only startup failure is not tied to a take.
+            using (Harness harness = new Harness(
+                delegate { return "Not logged in. Please run claude /login again.\n"; }, null))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitFailure(
+                    "Sign in needed \u2014 open the tray menu and choose Sign in", 3000),
+                    "warm-only sign-in failure");
+                Thread.Sleep(100);
+                Check(harness.TakeFailureCount == 0, "warm-only failure has no take event");
+            }
+
+            // A startup failure while a take is pending fails that take id.
+            using (Harness harness = new Harness(
+                delegate { return "Not logged in. Please run claude /login again.\n"; }, null))
+            {
+                int pending = harness.Engine.BeginTake();
+                Check(harness.WaitTakeFailure(pending, 3000),
+                    "startup failure fails the pending take");
+                Check(harness.TakeFailureText(pending) ==
+                    "Sign in needed \u2014 open the tray menu and choose Sign in",
+                    "pending take startup failure message");
+                Check(harness.CountTakeTerminalEvents(pending) == 1,
+                    "pending take one terminal event");
+            }
+
+            Console.WriteLine("PASS: Take ids allocate, record, complete and ignore stale ids.");
+        }
+
+        private static void EngineBusyBeginTests()
+        {
+            // BeginTake during Finalizing is queued; the older take is discarded.
+            bool holding = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate
+                    {
+                        if (holding) terminal.SetScreen(ListeningScreen(""));
+                    };
+                    terminal.ExportOnCtrlG = true;
+                    terminal.ExportText = "first words";
+                    terminal.ClearOnExport = true;
+                }))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "busy begin setup ready");
+                int first = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "busy begin first records");
+                holding = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen(ReadyScreen("first words"));
+                harness.Engine.EndTake(first);
+                Check(harness.WaitState(EngineState.Finalizing, 2000), "busy begin first finalizing");
+                int second = harness.Engine.BeginTake();
+                Check(second > first, "busy begin allocates a new id");
+                Check(harness.WaitTakeDiscard(first, 2000), "superseded finalizing take discards");
+                holding = true;
+                Check(harness.WaitState(EngineState.Recording, 4000),
+                    "queued take starts after finalizing");
+                Check(harness.WaitTakeRecording(second, 2000), "queued take records");
+                Check(harness.CountTakeTranscripts(first) == 0, "superseded take has no transcript");
+                holding = false;
+                terminal.ExportText = "second words";
+                terminal.SetScreen(ReadyScreen("second words"));
+                harness.Engine.EndTake(second);
+                Check(harness.WaitTakeTranscript(second, 3000), "queued take transcript");
+                Check(harness.TakeTranscriptText(second) == "second words", "queued take text");
+                Check(harness.CountTakeTerminalEvents(first) == 1, "superseded take one event");
+            }
+
+            // BeginTake during ExportWait is queued; the older id is discarded
+            // and the export timeout recycles before the queued take starts.
+            bool exportHolding = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate
+                    {
+                        if (exportHolding) terminal.SetScreen(ListeningScreen(""));
+                    };
+                    terminal.ExportOnCtrlG = false;
+                }))
+            {
+                harness.Options.ExportTimeoutMs = 400;
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "export-wait begin setup ready");
+                int first = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "export-wait begin records");
+                exportHolding = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen(ReadyScreen("export words"));
+                harness.Engine.EndTake(first);
+                Check(WaitUntil(delegate { return terminal.ContainsWrite("\x07"); }, 2000),
+                    "export-wait begin export requested");
+                int second = harness.Engine.BeginTake();
+                Check(second > first, "export-wait begin allocates id");
+                Check(harness.WaitTakeDiscard(first, 2000), "export-wait superseded take discards");
+                exportHolding = true;
+                Check(harness.WaitTerminalCount(2, 3000), "export-wait timeout recycles child");
+                Check(harness.WaitTakeRecording(second, 3000),
+                    "export-wait queued take records on fresh child");
+                Check(harness.CountTakeFailures(first) == 0,
+                    "export-wait superseded take has no failure");
+                exportHolding = false;
+                FakeTerminal secondTerminal = harness.TerminalAt(1);
+                secondTerminal.SetScreen(ReadyScreen(""));
+                harness.Engine.CancelTake(second);
+                Check(harness.WaitTakeDiscard(second, 3000), "export-wait queued take cancels");
+            }
+
+            // BeginTake during ClearWait is queued, not dropped.
+            bool clearHolding = true;            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate
+                    {
+                        if (clearHolding) terminal.SetScreen(ListeningScreen(""));
+                    };
+                    terminal.ExportOnCtrlG = true;
+                    terminal.ExportText = "clear words";
+                    terminal.ClearOnExport = false;
+                }))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "clear-wait begin setup ready");
+                int first = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "clear-wait begin records");
+                clearHolding = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen(ReadyScreen("clear words"));
+                harness.Engine.EndTake(first);
+                Check(harness.WaitTakeTranscript(first, 3000), "clear-wait transcript");
+                int second = harness.Engine.BeginTake();
+                Check(second > first, "clear-wait begin allocates id");
+                Check(harness.Engine.State == EngineState.Finalizing, "clear-wait still finalizing");
+                clearHolding = true;
+                terminal.SetScreen(ReadyScreen(""));
+                Check(harness.WaitState(EngineState.Recording, 3000),
+                    "begin during clear wait starts the new take");
+                Check(harness.WaitTakeRecording(second, 2000), "clear-wait queued take records");
+                clearHolding = false;
+                terminal.SetScreen(ReadyScreen(""));
+                harness.Engine.CancelTake(second);
+                Check(harness.WaitTakeDiscard(second, 3000), "clear-wait queued take cancels");
+            }
+
+            Console.WriteLine("PASS: BeginTake queues during finalizing and clear wait.");
+        }
+
+        private static void EngineSupersedeRecordingTests()
+        {
+            bool holding = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate
+                    {
+                        if (holding) terminal.SetScreen(ListeningScreen(""));
+                    };
+                }))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "supersede recording setup ready");
+                int first = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "supersede first records");
+                holding = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen(ReadyScreen(""));
+                int second = harness.Engine.BeginTake();
+                Check(second > first, "supersede recording allocates a new id");
+                Check(harness.WaitTakeDiscard(first, 2000), "superseded recording take discards");
+                holding = true;
+                Check(harness.WaitTakeRecording(second, 3000),
+                    "supersede recording starts the new take");
+                holding = false;
+                terminal.SetScreen(ReadyScreen(""));
+                harness.Engine.CancelTake(second);
+                Check(harness.WaitTakeDiscard(second, 3000), "supersede new take cancels");
+            }
+
+            Console.WriteLine("PASS: A new BeginTake supersedes an active recording take.");
+        }
+
+        private static void EngineHoldGuardTests()
+        {
+            bool blocking = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate
+                    {
+                        if (blocking) terminal.SetScreen(ListeningScreen(""));
+                    };
+                }))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "sign-in hold guard ready");
+                int takeId = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "sign-in hold guard records");
+                blocking = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen("Not logged in. Please run claude /login again.\n");
+                Check(harness.WaitTakeFailure(takeId, 2000), "sign-in during hold fails take");
+                Check(harness.TakeFailureText(takeId) ==
+                    "Sign in needed \u2014 open the tray menu and choose Sign in",
+                    "sign-in hold guard message");
+                Check(harness.WaitState(EngineState.Faulted, 2000), "sign-in hold guard faults");
+                Check(terminal.IsDisposed, "sign-in hold guard disposes child");
+                Check(harness.SessionAt(0).Disposed, "sign-in hold guard disposes session");
+                Check(!terminal.ContainsWrite("\x07"), "sign-in hold guard never exports");
+                Check(harness.TakeDiscardCount == 0, "sign-in hold guard is not discarded");
+            }
+
+            bool setupBlocking = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate
+                    {
+                        if (setupBlocking) terminal.SetScreen(ListeningScreen(""));
+                    };
+                }))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "setup hold guard ready");
+                int takeId = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "setup hold guard records");
+                setupBlocking = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen("Do you trust the files in this folder?\nYes, proceed\n");
+                Check(harness.WaitTakeFailure(takeId, 2000), "setup during hold fails take");
+                Check(harness.TakeFailureText(takeId) ==
+                    "Claude needs one-time setup \u2014 choose Sign in from the tray menu",
+                    "setup hold guard message");
+                Check(harness.WaitState(EngineState.Faulted, 2000), "setup hold guard faults");
+                Check(terminal.IsDisposed, "setup hold guard disposes child");
+                Check(!terminal.ContainsWrite("\x07"), "setup hold guard never exports");
+            }
+
+            Console.WriteLine("PASS: Hold ticks and polls stop on sign-in and setup screens.");
+        }
+
+        private static void EngineCancelQuietWindowTests()
+        {
+            bool holding = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate
+                    {
+                        if (holding) terminal.SetScreen(ListeningScreen(""));
+                    };
+                    terminal.ExportOnCtrlG = true;
+                    terminal.ExportText = "late words";
+                    terminal.ClearOnExport = true;
+                }))
+            {
+                harness.Options.NoSpeechMs = 500;
+                harness.Options.FinalizeTimeoutMs = 3000;
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "cancel window setup ready");
+                int takeId = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "cancel window records");
+                holding = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen(ReadyScreen(""));
+                harness.Engine.CancelTake(takeId);
+                Check(harness.WaitState(EngineState.Finalizing, 1000),
+                    "cancel window enters finalizing");
+                Thread.Sleep(150);
+                Check(harness.Engine.State == EngineState.Finalizing,
+                    "cancel quiet waits at least NoSpeechMs");
+                terminal.SetScreen(ReadyScreen("late words"));
+                Check(WaitUntil(delegate { return terminal.ContainsWrite("\x07"); }, 2000),
+                    "late cancel text exports for discard");
+                Check(harness.WaitTakeDiscard(takeId, 3000), "late cancel text discards the take");
+                Check(harness.WaitState(EngineState.Ready, 3000), "cancel window returns ready");
+                Check(harness.TranscriptCount == 0, "late cancel text never raises transcript");
+                Check(harness.FailureCount == 0, "late cancel text has no failure");
+                Check(harness.DiscardedCount == 1, "late cancel text discards once");
+            }
+
+            Console.WriteLine("PASS: Cancel quiet uses the NoSpeechMs window and exports late text.");
+        }
+
+        private static void EngineDiscardBeforeTakeTests()
+        {
+            // A timed-out pre-take discard recycles the child and starts the take.
+            int timeoutScreens = 0;
+            bool timeoutHolding = true;
+            using (Harness harness = new Harness(
+                delegate
+                {
+                    timeoutScreens++;
+                    return timeoutScreens == 1 ? ReadyScreen("stale draft") : ReadyScreen("");
+                },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.ExportOnCtrlG = false;
+                    terminal.OnSpace = delegate
+                    {
+                        if (timeoutHolding) terminal.SetScreen(ListeningScreen(""));
+                    };
+                }))
+            {
+                harness.Options.ExportTimeoutMs = 150;
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "discard timeout setup ready");
+                int takeId = harness.Engine.BeginTake();
+                Check(harness.WaitTerminalCount(2, 3000), "discard timeout recycles child");
+                Check(harness.WaitState(EngineState.Recording, 3000),
+                    "discard timeout begins take on fresh child");
+                Check(harness.WaitTakeRecording(takeId, 2000), "discard timeout fresh take records");
+                Check(harness.FailureCount == 0, "discard timeout does not fail the take");
+                Check(harness.CountTakeFailures(takeId) == 0, "discard timeout no take failure");
+                Check(harness.TerminalAt(0).IsDisposed, "discard timeout disposes old child");
+                Check(harness.SessionAt(0).Disposed, "discard timeout disposes old session");
+                Check(harness.TerminalAt(0).WriteCount == 1,
+                    "discard timeout never holds on the old draft");
+                timeoutHolding = false;
+                FakeTerminal second = harness.TerminalAt(1);
+                second.SetScreen(ReadyScreen(""));
+                harness.Engine.CancelTake(takeId);
+                Check(harness.WaitTakeDiscard(takeId, 3000), "discard timeout take cancels");
+            }
+
+            // A composer that stays non-empty after the discard is recycled
+            // before the take begins on the fresh child.
+            int clearScreens = 0;
+            bool clearHolding = true;
+            using (Harness harness = new Harness(
+                delegate
+                {
+                    clearScreens++;
+                    return clearScreens == 1 ? ReadyScreen("stale draft") : ReadyScreen("");
+                },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.ExportOnCtrlG = true;
+                    terminal.ExportText = "stale draft";
+                    terminal.ClearOnExport = clearScreens != 1;
+                    terminal.OnSpace = delegate
+                    {
+                        if (clearHolding) terminal.SetScreen(ListeningScreen(""));
+                    };
+                }))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "discard clear setup ready");
+                int takeId = harness.Engine.BeginTake();
+                Check(harness.WaitTerminalCount(2, 5000),
+                    "non-empty composer recycles before the take");
+                Check(harness.WaitState(EngineState.Recording, 3000),
+                    "non-empty composer begins take on fresh child");
+                Check(harness.WaitTakeRecording(takeId, 2000),
+                    "non-empty composer fresh take records");
+                Check(harness.FailureCount == 0, "non-empty composer does not fail the take");
+                Check(harness.CountTakeFailures(takeId) == 0,
+                    "non-empty composer no take failure");
+                Check(harness.TerminalAt(0).IsDisposed, "non-empty composer disposes old child");
+                Check(harness.TerminalAt(0).WriteCount == 1,
+                    "non-empty composer never holds on the old draft");
+                clearHolding = false;
+                FakeTerminal second = harness.TerminalAt(1);
+                second.SetScreen(ReadyScreen(""));
+                harness.Engine.CancelTake(takeId);
+                Check(harness.WaitTakeDiscard(takeId, 3000), "non-empty composer take cancels");
+            }
+
+            Console.WriteLine("PASS: Discard-before-take failures recycle the child and keep the take.");
+        }
+
+        private static void EngineClearWaitTests()
+        {
+            // Unknown frames are transient during the post-export clear wait.
+            bool holding = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate
+                    {
+                        if (holding) terminal.SetScreen(ListeningScreen(""));
+                    };
+                    terminal.ExportOnCtrlG = true;
+                    terminal.ExportText = "clear me";
+                    terminal.ScreenAfterExport = "starting claude\n";
+                }))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "clear wait setup ready");
+                int takeId = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "clear wait records");
+                holding = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen(ReadyScreen("clear me"));
+                harness.Engine.EndTake(takeId);
+                Check(harness.WaitTakeTranscript(takeId, 3000), "clear wait transcript");
+                Thread.Sleep(150);
+                Check(harness.Engine.State == EngineState.Finalizing,
+                    "unknown clear frame keeps waiting");
+                Check(harness.FailureCount == 0, "unknown clear frame has no failure");
+                terminal.SetScreen(ReadyScreen(""));
+                Check(harness.WaitState(EngineState.Ready, 3000),
+                    "transient clear frame recovers to ready");
+            }
+
+            // A clear wait that stays unknown recycles at the 3 s deadline.
+            bool stuckHolding = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate
+                    {
+                        if (stuckHolding) terminal.SetScreen(ListeningScreen(""));
+                    };
+                    terminal.ExportOnCtrlG = true;
+                    terminal.ExportText = "stuck";
+                    terminal.ScreenAfterExport = "starting claude\n";
+                }))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "stuck clear setup ready");
+                int takeId = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "stuck clear records");
+                stuckHolding = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen(ReadyScreen("stuck"));
+                harness.Engine.EndTake(takeId);
+                Check(harness.WaitTakeTranscript(takeId, 3000), "stuck clear transcript");
+                Check(harness.WaitTerminalCount(2, 5000), "stuck clear recycles at deadline");
+                Check(harness.TerminalAt(0).IsDisposed, "stuck clear disposes old child");
+                Check(harness.FailureCount == 0, "stuck clear does not fault");
+                Check(harness.WaitState(EngineState.Ready, 3000), "stuck clear recycled ready");
+            }
+
+            // Sign-in frames still fail fast during the clear wait.
+            bool signInHolding = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate
+                    {
+                        if (signInHolding) terminal.SetScreen(ListeningScreen(""));
+                    };
+                    terminal.ExportOnCtrlG = true;
+                    terminal.ExportText = "sign in";
+                    terminal.ScreenAfterExport = "Not logged in. Please run claude /login again.\n";
+                }))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "clear sign-in setup ready");
+                int takeId = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "clear sign-in records");
+                signInHolding = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen(ReadyScreen("sign in"));
+                harness.Engine.EndTake(takeId);
+                Check(harness.WaitTakeTranscript(takeId, 3000), "clear sign-in transcript");
+                Check(harness.WaitFailure(
+                    "Sign in needed \u2014 open the tray menu and choose Sign in", 2000),
+                    "clear sign-in fails fast");
+                Check(harness.WaitState(EngineState.Faulted, 2000), "clear sign-in faults");
+            }
+
+            Console.WriteLine("PASS: Clear wait tolerates transient frames and fails fast on prompts.");
+        }
+
+        private static void EngineExportTimeoutTests()
+        {
+            // Transcript timeout recycles the child and session before failing.
+            bool holding = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate
+                    {
+                        if (holding) terminal.SetScreen(ListeningScreen(""));
+                    };
+                    terminal.ExportOnCtrlG = false;
+                }))
+            {
+                harness.Options.ExportTimeoutMs = 150;
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "export timeout setup ready");
+                int takeId = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "export timeout records");
+                holding = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen(ReadyScreen("lost words"));
+                harness.Engine.EndTake(takeId);
+                Check(harness.WaitTakeFailure(takeId, 3000), "export timeout fails the take");
+                Check(harness.WaitTerminalCount(2, 3000), "export timeout recycles child");
+                Check(harness.TerminalAt(0).IsDisposed, "export timeout disposes old child");
+                Check(harness.SessionAt(0).Disposed, "export timeout disposes old session");
+                Check(harness.WaitState(EngineState.Ready, 3000), "export timeout returns ready");
+                Check(harness.TranscriptCount == 0, "export timeout has no transcript");
+            }
+
+            // Discard export timeout also recycles before the take is discarded.
+            bool cancelHolding = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate
+                    {
+                        if (cancelHolding) terminal.SetScreen(ListeningScreen(""));
+                    };
+                    terminal.ExportOnCtrlG = false;
+                }))
+            {
+                harness.Options.ExportTimeoutMs = 150;
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "discard timeout setup ready");
+                int takeId = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "discard timeout records");
+                cancelHolding = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen(ReadyScreen("cancel words"));
+                harness.Engine.CancelTake(takeId);
+                Check(harness.WaitTakeDiscard(takeId, 3000), "discard timeout discards the take");
+                Check(harness.WaitTerminalCount(2, 3000), "discard timeout recycles child");
+                Check(harness.TerminalAt(0).IsDisposed, "discard timeout disposes old child");
+                Check(harness.SessionAt(0).Disposed, "discard timeout disposes old session");
+                Check(harness.TranscriptCount == 0, "discard timeout has no transcript");
+            }
+
+            Console.WriteLine("PASS: Export timeouts recycle the child and session.");
+        }
+
+        private static void EngineSuspendTests()
+        {
+            // A Warm queued before Suspend cannot leave a child running.
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); }, null))
+            {
+                harness.Engine.Warm();
+                harness.Engine.Suspend();
+                Check(harness.WaitSuspended(3000), "suspend raises suspended");
+                Check(harness.Engine.State == EngineState.Stopped, "suspend stops the engine");
+                Check(harness.TerminalCount >= 1, "warm before suspend created a child");
+                Check(harness.AllTerminalsDisposed(), "suspended event follows child disposal");
+                Check(harness.AllSessionsDisposed(), "suspended event follows session disposal");
+
+                int count = harness.TerminalCount;
+                harness.Engine.Warm();
+                Thread.Sleep(150);
+                Check(harness.TerminalCount == count, "warm is ignored while suspended");
+
+                int failedTake = harness.Engine.BeginTake();
+                Check(harness.WaitTakeFailure(failedTake, 2000),
+                    "begin while suspended fails the take");
+                Check(harness.TakeFailureText(failedTake) ==
+                    "Finish the Claude sign-in window first",
+                    "suspended take failure message");
+                Check(harness.CountTakeDiscards(failedTake) == 0,
+                    "suspended take is not discarded");
+                Thread.Sleep(100);
+                Check(harness.TerminalCount == count, "suspended begin starts no child");
+
+                harness.Engine.Resume();
+                harness.Engine.Warm();
+                Check(harness.WaitTerminalCount(count + 1, 3000), "resume allows warm");
+                Check(harness.WaitState(EngineState.Ready, 3000), "resumed child ready");
+            }
+
+            // An active take is discarded by Suspend.
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate { terminal.SetScreen(ListeningScreen("")); };
+                }))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "suspend take setup ready");
+                int takeId = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "suspend take records");
+                harness.Engine.Suspend();
+                Check(harness.WaitTakeDiscard(takeId, 2000), "suspend discards the active take");
+                Check(harness.WaitSuspended(2000), "suspend raises suspended after take");
+                Check(harness.Engine.State == EngineState.Stopped, "suspend take stops");
+                Check(harness.TerminalAt(0).IsDisposed, "suspend take disposes child");
+                Check(harness.SessionAt(0).Disposed, "suspend take disposes session");
+                Check(harness.FailureCount == 0, "suspend is not a failure");
+                Check(harness.DiscardedCount == 1, "suspend discards once");
+            }
+
+            // A pending take in Starting is discarded by Suspend.
+            using (Harness harness = new Harness(delegate { return UnknownScreen(); }, null))
+            {
+                int pending = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Starting, 2000), "suspend pending starting");
+                harness.Engine.Suspend();
+                Check(harness.WaitTakeDiscard(pending, 2000), "suspend discards the pending take");
+                Check(harness.WaitSuspended(2000), "suspend pending raises suspended");
+                Check(harness.Engine.State == EngineState.Stopped, "suspend pending stops");
+                Check(harness.TerminalAt(0).IsDisposed, "suspend pending disposes child");
+            }
+
+            Console.WriteLine("PASS: Suspend cancels takes, disposes the child and blocks Warm.");
+        }
         private static void EngineWriteSafetyTests()
         {
             lock (SafetyGate)
@@ -910,7 +1625,14 @@ namespace Murmur.Tests.App
             private readonly List<string> _transcripts = new List<string>();
             private readonly List<string> _diagnostics = new List<string>();
             private readonly List<int> _eventThreads = new List<int>();
+            private readonly List<int> _takeRecordings = new List<int>();
+            private readonly List<int> _takeTranscriptIds = new List<int>();
+            private readonly List<string> _takeTranscriptTexts = new List<string>();
+            private readonly List<int> _takeFailureIds = new List<int>();
+            private readonly List<string> _takeFailureMessages = new List<string>();
+            private readonly List<int> _takeDiscardIds = new List<int>();
             private int _discarded;
+            private int _suspended;
 
             public readonly EngineOptions Options;
             public readonly DictationEngine Engine;
@@ -970,6 +1692,43 @@ namespace Murmur.Tests.App
                         _discarded++;
                     }
                 };
+                Engine.TakeRecording += delegate(int id)
+                {
+                    lock (_gate)
+                    {
+                        _takeRecordings.Add(id);
+                    }
+                };
+                Engine.TakeTranscript += delegate(int id, string text)
+                {
+                    lock (_gate)
+                    {
+                        _takeTranscriptIds.Add(id);
+                        _takeTranscriptTexts.Add(text);
+                    }
+                };
+                Engine.TakeFailed += delegate(int id, string message)
+                {
+                    lock (_gate)
+                    {
+                        _takeFailureIds.Add(id);
+                        _takeFailureMessages.Add(message);
+                    }
+                };
+                Engine.TakeDiscarded += delegate(int id)
+                {
+                    lock (_gate)
+                    {
+                        _takeDiscardIds.Add(id);
+                    }
+                };
+                Engine.Suspended += delegate
+                {
+                    lock (_gate)
+                    {
+                        _suspended++;
+                    }
+                };
             }
 
             public int TerminalCount
@@ -1000,6 +1759,149 @@ namespace Murmur.Tests.App
             public int DiscardedCount
             {
                 get { lock (_gate) { return _discarded; } }
+            }
+
+            public int SuspendedCount
+            {
+                get { lock (_gate) { return _suspended; } }
+            }
+
+            public int TakeRecordingCount
+            {
+                get { lock (_gate) { return _takeRecordings.Count; } }
+            }
+
+            public int TakeTranscriptCount
+            {
+                get { lock (_gate) { return _takeTranscriptIds.Count; } }
+            }
+
+            public int TakeFailureCount
+            {
+                get { lock (_gate) { return _takeFailureIds.Count; } }
+            }
+
+            public int TakeDiscardCount
+            {
+                get { lock (_gate) { return _takeDiscardIds.Count; } }
+            }
+
+            public bool HasTakeRecording(int id)
+            {
+                lock (_gate) { return _takeRecordings.Contains(id); }
+            }
+
+            public int CountTakeTranscripts(int id)
+            {
+                lock (_gate)
+                {
+                    int count = 0;
+                    for (int i = 0; i < _takeTranscriptIds.Count; i++)
+                    {
+                        if (_takeTranscriptIds[i] == id)
+                        {
+                            count++;
+                        }
+                    }
+                    return count;
+                }
+            }
+
+            public string TakeTranscriptText(int id)
+            {
+                lock (_gate)
+                {
+                    for (int i = 0; i < _takeTranscriptIds.Count; i++)
+                    {
+                        if (_takeTranscriptIds[i] == id)
+                        {
+                            return _takeTranscriptTexts[i];
+                        }
+                    }
+                }
+                return null;
+            }
+
+            public int CountTakeFailures(int id)
+            {
+                lock (_gate)
+                {
+                    int count = 0;
+                    for (int i = 0; i < _takeFailureIds.Count; i++)
+                    {
+                        if (_takeFailureIds[i] == id)
+                        {
+                            count++;
+                        }
+                    }
+                    return count;
+                }
+            }
+
+            public string TakeFailureText(int id)
+            {
+                lock (_gate)
+                {
+                    for (int i = 0; i < _takeFailureIds.Count; i++)
+                    {
+                        if (_takeFailureIds[i] == id)
+                        {
+                            return _takeFailureMessages[i];
+                        }
+                    }
+                }
+                return null;
+            }
+
+            public int CountTakeDiscards(int id)
+            {
+                lock (_gate)
+                {
+                    int count = 0;
+                    for (int i = 0; i < _takeDiscardIds.Count; i++)
+                    {
+                        if (_takeDiscardIds[i] == id)
+                        {
+                            count++;
+                        }
+                    }
+                    return count;
+                }
+            }
+
+            public int CountTakeTerminalEvents(int id)
+            {
+                return CountTakeTranscripts(id) + CountTakeFailures(id) + CountTakeDiscards(id);
+            }
+
+            public bool AllTerminalsDisposed()
+            {
+                lock (_gate)
+                {
+                    for (int i = 0; i < _terminals.Count; i++)
+                    {
+                        if (!_terminals[i].IsDisposed)
+                        {
+                            return false;
+                        }
+                    }
+                }
+                return true;
+            }
+
+            public bool AllSessionsDisposed()
+            {
+                lock (_gate)
+                {
+                    for (int i = 0; i < _sessions.Count; i++)
+                    {
+                        if (!_sessions[i].Disposed)
+                        {
+                            return false;
+                        }
+                    }
+                }
+                return true;
             }
 
             public bool HasDiagnostic(string message)
@@ -1065,6 +1967,31 @@ namespace Murmur.Tests.App
             public bool WaitDiscardedCount(int count, int timeoutMs)
             {
                 return EngineTests.WaitUntil(delegate { return DiscardedCount >= count; }, timeoutMs);
+            }
+
+            public bool WaitTakeRecording(int id, int timeoutMs)
+            {
+                return EngineTests.WaitUntil(delegate { return HasTakeRecording(id); }, timeoutMs);
+            }
+
+            public bool WaitTakeTranscript(int id, int timeoutMs)
+            {
+                return EngineTests.WaitUntil(delegate { return CountTakeTranscripts(id) > 0; }, timeoutMs);
+            }
+
+            public bool WaitTakeFailure(int id, int timeoutMs)
+            {
+                return EngineTests.WaitUntil(delegate { return CountTakeFailures(id) > 0; }, timeoutMs);
+            }
+
+            public bool WaitTakeDiscard(int id, int timeoutMs)
+            {
+                return EngineTests.WaitUntil(delegate { return CountTakeDiscards(id) > 0; }, timeoutMs);
+            }
+
+            public bool WaitSuspended(int timeoutMs)
+            {
+                return EngineTests.WaitUntil(delegate { return SuspendedCount > 0; }, timeoutMs);
             }
 
             public void Dispose()

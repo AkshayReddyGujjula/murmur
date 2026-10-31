@@ -180,6 +180,10 @@ namespace Murmur.App.Engine
 
             for (int i = 0; i < lines.Length; i++)
             {
+                if (composerStart >= 0 && i >= composerStart && i <= composerEnd)
+                {
+                    continue;
+                }
                 string line = lines[i];
                 if (Contains(line, "/login") || Contains(line, "Not logged in") ||
                     Contains(line, "Invalid API key") || Contains(line, "Please run"))
@@ -190,6 +194,10 @@ namespace Murmur.App.Engine
 
             for (int i = 0; i < lines.Length; i++)
             {
+                if (composerStart >= 0 && i >= composerStart && i <= composerEnd)
+                {
+                    continue;
+                }
                 string line = lines[i];
                 if (Contains(line, "Do you trust") || Contains(line, "Yes, proceed") ||
                     Contains(line, "Choose the text style") || Contains(line, "Press Enter to continue"))
