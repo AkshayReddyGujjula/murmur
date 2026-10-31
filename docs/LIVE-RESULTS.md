@@ -79,3 +79,22 @@ The existing Claude session and clipboard remain off limits.
   written. This establishes two successful short hold/stop/export runs, not perfect
   transcription accuracy. Proper-name accuracy remains an explicit limitation.
 - Awaiting user availability for seven-minute duration and cancellation checks.
+
+## Duration take (~1-2 minutes, five paragraphs with pauses)
+
+- The user chose a 1-2 minute take in place of seven minutes. **Seven minutes
+  remains untested.**
+- Driven from Claude Code. The probe ran in its own console window; a scratch helper
+  (`.test-output/conkey/ConKey.exe`, ignored, not part of the app) attached to that
+  console only to inject R/S/V/E key events and read its screen buffer.
+- Verified `listening…` after R. On stop, the finalized unsent composer held the
+  full read-through, opening and closing sentences included. No paragraph was
+  dropped across the ~3 s pauses. No prompt was submitted; clipboard untouched.
+- Differences from the script: "duration test" heard as "dictation text"/"dictation
+  test"; "Murmur" now recognized (lowercase); "names and numbers" -> "names,
+  numbers,"; "result" -> "results"; "If recording" -> "If a recording"; "this
+  closing" -> "the closing"; "three thousand" -> "3000". Some may be reading slips.
+- E was sent and the probe and its Claude child exited (no leftover processes;
+  handoff file removed). The probe's console window closed on exit, so the
+  exported text itself was not captured. Its content is evidenced by the
+  finalized composer snapshot, not by the export output.
