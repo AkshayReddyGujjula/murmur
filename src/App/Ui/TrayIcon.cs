@@ -37,6 +37,7 @@ namespace Murmur.App.Ui
             menu.ForeColor = Color.White;
             menu.ShowCheckMargin = true;
             menu.ShowImageMargin = false;
+            menu.ShowItemToolTips = false;
             menu.Opening += OnMenuOpening;
 
             notify = new NotifyIcon();
@@ -108,6 +109,7 @@ namespace Murmur.App.Ui
         private void ShowMenu()
         {
             if (disposed) return;
+            RebuildMenu();
             if (menu.Items.Count == 0) return;
             try
             {
@@ -135,23 +137,15 @@ namespace Murmur.App.Ui
 
         private void RebuildMenu()
         {
+            List<TrayItem> items;
+            if (!TrayMenuHelper.TryBuildMenu(buildMenu, out items)) return;
+
             while (menu.Items.Count > 0)
             {
                 ToolStripItem existing = menu.Items[0];
                 menu.Items.RemoveAt(0);
                 existing.Dispose();
             }
-
-            List<TrayItem> items = null;
-            try
-            {
-                if (buildMenu != null) items = buildMenu();
-            }
-            catch (Exception)
-            {
-                items = null;
-            }
-            if (items == null) return;
 
             for (int index = 0; index < items.Count; index++)
             {
@@ -165,7 +159,8 @@ namespace Murmur.App.Ui
             if (source == null) return null;
             if (source.IsSeparator) return new ToolStripSeparator();
 
-            ToolStripMenuItem item = new ToolStripMenuItem(source.Text == null ? String.Empty : source.Text);
+            ToolStripMenuItem item = new ToolStripMenuItem(TrayMenuHelper.EscapeAmpersands(source.Text));
+            TrayMenuHelper.ConfigureItem(item);
             if (source.IsHeader)
             {
                 item.Enabled = false;
@@ -192,6 +187,7 @@ namespace Murmur.App.Ui
                 item.DropDown.Font = menuFont;
                 item.DropDown.BackColor = Color.Black;
                 item.DropDown.ForeColor = Color.White;
+                item.DropDown.ShowItemToolTips = false;
             }
             return item;
         }

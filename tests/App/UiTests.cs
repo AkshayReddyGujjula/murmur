@@ -1,7 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Reflection;
+using System.Windows.Forms;
 using Murmur.App.Ui;
 
 namespace Murmur.Tests.App
@@ -16,6 +19,7 @@ namespace Murmur.Tests.App
             checks++;
         }
 
+        [STAThread]
         public static int Main()
         {
             try
@@ -25,6 +29,10 @@ namespace Murmur.Tests.App
                 CheckLayout();
                 CheckWaveHistory();
                 CheckTrayItem();
+                CheckOverlayState();
+                CheckOverlayWindowContract();
+                CheckTrayMenuHelper();
+                CheckMenuItemFlags();
                 Console.WriteLine("PASS: Ui logo, ICO export, overlay layout, waveform history and tray model (" + checks + " checks).");
                 return 0;
             }
@@ -214,6 +222,139 @@ namespace Murmur.Tests.App
             Check(clicked, "tray item invokes its action");
             item.Children.Add(new TrayItem());
             Check(item.Children.Count == 1, "tray item keeps children");
+        }
+
+        private static void CheckOverlayState()
+        {
+            OverlayState state = new OverlayState();
+            Check(state.Mode == OverlayMode.Hidden, "overlay state starts hidden");
+            Check(!state.IsShowing, "overlay state IsShowing false when hidden");
+
+            DateTime start = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            state.Enter(OverlayMode.Recording, start);
+            Check(state.Mode == OverlayMode.Recording, "overlay state tracks recording mode");
+            Check(state.IsShowing, "overlay state IsShowing true when recording");
+            Check(state.ShownAt == start, "overlay state tracks shown time");
+            Check(!state.ShouldHide(start.AddSeconds(60.0)), "recording never auto-hides");
+            Check(!state.ShouldHide(start.AddSeconds(10000.0)), "recording never auto-hides after hours");
+
+            state.Enter(OverlayMode.Starting, start);
+            Check(state.IsShowing, "overlay state IsShowing true when starting");
+            Check(!state.ShouldHide(start.AddSeconds(10000.0)), "starting never auto-hides");
+
+            state.Enter(OverlayMode.Working, start);
+            Check(state.Mode == OverlayMode.Working, "overlay state tracks working mode");
+            Check(state.IsShowing, "overlay state IsShowing true when working");
+            Check(!state.ShouldHide(start.AddSeconds(119.9)), "working stays visible before 120 s");
+            Check(state.ShouldHide(start.AddSeconds(120.0)), "working auto-hides at 120 s");
+            Check(state.ShouldHide(start.AddSeconds(1000.0)), "working stays hidden after 120 s");
+
+            state.Enter(OverlayMode.Done, start);
+            Check(state.IsShowing, "overlay state IsShowing true when done");
+            Check(!state.ShouldHide(start.AddSeconds(1.09)), "done stays visible before 1.1 s");
+            Check(state.ShouldHide(start.AddSeconds(1.1)), "done auto-hides at 1.1 s");
+
+            state.Enter(OverlayMode.Error, start);
+            Check(state.IsShowing, "overlay state IsShowing true when error");
+            Check(!state.ShouldHide(start.AddSeconds(3.49)), "error stays visible before 3.5 s");
+            Check(state.ShouldHide(start.AddSeconds(3.5)), "error auto-hides at 3.5 s");
+
+            state.Enter(OverlayMode.Hidden, start);
+            Check(state.Mode == OverlayMode.Hidden, "overlay state returns to hidden");
+            Check(!state.IsShowing, "overlay state IsShowing false after hide");
+            Check(!state.ShouldHide(start.AddSeconds(10000.0)), "hidden never auto-hides");
+        }
+
+        private static void CheckOverlayWindowContract()
+        {
+            PropertyInfo modeProperty = typeof(OverlayWindow).GetProperty("Mode");
+            Check(modeProperty != null && modeProperty.PropertyType == typeof(OverlayMode), "overlay window exposes Mode");
+            Check(modeProperty.CanRead, "overlay window Mode is readable");
+            PropertyInfo showingProperty = typeof(OverlayWindow).GetProperty("IsShowing");
+            Check(showingProperty != null && showingProperty.PropertyType == typeof(bool), "overlay window exposes IsShowing");
+            Check(showingProperty.CanRead, "overlay window IsShowing is readable");
+
+            using (OverlayWindow window = new OverlayWindow())
+            {
+                Check(window.Mode == OverlayMode.Hidden, "overlay window starts hidden");
+                Check(!window.IsShowing, "overlay window IsShowing false when hidden");
+            }
+        }
+
+        private static List<TrayItem> BuildTwoItems()
+        {
+            List<TrayItem> items = new List<TrayItem>();
+            TrayItem first = new TrayItem();
+            first.Text = "First";
+            items.Add(first);
+            TrayItem second = new TrayItem();
+            second.Text = "Second";
+            items.Add(second);
+            return items;
+        }
+
+        private static List<TrayItem> BuildThrowingItems()
+        {
+            throw new InvalidOperationException("menu failed");
+        }
+
+        private static void CheckTrayMenuHelper()
+        {
+            List<TrayItem> built;
+            Check(TrayMenuHelper.TryBuildMenu(new Func<List<TrayItem>>(BuildTwoItems), out built), "tray helper builds a valid menu");
+            Check(built != null && built.Count == 2, "tray helper returns built items");
+
+            List<TrayItem> previous = BuildTwoItems();
+            List<TrayItem> failed;
+            Check(!TrayMenuHelper.TryBuildMenu(new Func<List<TrayItem>>(BuildThrowingItems), out failed), "tray helper reports build failure");
+            Check(failed == null, "tray helper returns null on throw");
+            List<TrayItem> kept = TrayMenuHelper.SafeBuild(new Func<List<TrayItem>>(BuildThrowingItems), previous);
+            Check(kept == previous, "tray helper keeps previous menu when build throws");
+
+            List<TrayItem> nullKept = TrayMenuHelper.SafeBuild(null, previous);
+            Check(nullKept == previous, "tray helper keeps previous menu when builder is missing");
+
+            Func<List<TrayItem>> nullBuilder = delegate { return null; };
+            List<TrayItem> nullResult;
+            Check(!TrayMenuHelper.TryBuildMenu(nullBuilder, out nullResult), "tray helper treats null menu as failure");
+            Check(TrayMenuHelper.SafeBuild(nullBuilder, previous) == previous, "tray helper keeps previous menu when build returns null");
+
+            Func<List<TrayItem>> emptyBuilder = delegate { return new List<TrayItem>(); };
+            List<TrayItem> emptyResult;
+            Check(TrayMenuHelper.TryBuildMenu(emptyBuilder, out emptyResult), "tray helper accepts an empty menu");
+            Check(emptyResult != null && emptyResult.Count == 0, "tray helper returns the empty menu so the caller can rebuild");
+
+            MethodInfo showMenu = typeof(TrayIcon).GetMethod("ShowMenu", BindingFlags.Instance | BindingFlags.NonPublic);
+            Check(showMenu != null, "tray icon keeps a left-click ShowMenu path");
+            MethodInfo rebuild = typeof(TrayIcon).GetMethod("RebuildMenu", BindingFlags.Instance | BindingFlags.NonPublic);
+            Check(rebuild != null, "tray icon keeps a shared RebuildMenu path");
+        }
+
+        private static void CheckMenuItemFlags()
+        {
+            Check(TrayMenuHelper.EscapeAmpersands(null) == String.Empty, "ampersand escape handles null");
+            Check(TrayMenuHelper.EscapeAmpersands("Preview & transcript") == "Preview && transcript", "ampersand is escaped so it shows literally");
+            Check(TrayMenuHelper.EscapeAmpersands("a && b") == "a &&&& b", "existing escapes are preserved");
+            Check(TrayMenuHelper.EscapeAmpersands("plain") == "plain", "text without ampersand is unchanged");
+
+            using (ToolStripMenuItem plain = new ToolStripMenuItem(TrayMenuHelper.EscapeAmpersands("Preview & transcript")))
+            {
+                TrayMenuHelper.ConfigureItem(plain);
+                Check(plain.ToolTipText == String.Empty, "menu item clears per-item tooltip text");
+                Check(plain.Text == "Preview && transcript", "menu item keeps & literally via escaping");
+            }
+
+            using (ToolStripMenuItem header = new ToolStripMenuItem("Murmur"))
+            {
+                TrayMenuHelper.ConfigureItem(header);
+                Check(header.ToolTipText == String.Empty, "menu helper clears tooltips on headers too");
+            }
+
+            using (ContextMenuStrip owner = new ContextMenuStrip())
+            {
+                owner.ShowItemToolTips = false;
+                Check(!owner.ShowItemToolTips, "menu owner disables item tooltips");
+            }
         }
     }
 }

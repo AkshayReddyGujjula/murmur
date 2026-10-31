@@ -27,10 +27,9 @@ namespace Murmur.App.Ui
         private readonly Timer timer;
         private readonly object sync = new object();
         private readonly WaveHistory wave;
+        private readonly OverlayState state;
 
-        private OverlayMode mode;
         private string caption;
-        private DateTime shownAt;
         private float pendingLevel;
         private bool hasLevel;
         private bool disposed;
@@ -46,7 +45,7 @@ namespace Murmur.App.Ui
             Text = "Murmur";
             Size = new Size(1, 1);
 
-            mode = OverlayMode.Hidden;
+            state = new OverlayState();
             caption = String.Empty;
             wave = new WaveHistory(BarCount);
             timer = new Timer();
@@ -55,6 +54,16 @@ namespace Murmur.App.Ui
         }
 
         public bool PlaceAtTop { get; set; }
+
+        public OverlayMode Mode
+        {
+            get { return state.Mode; }
+        }
+
+        public bool IsShowing
+        {
+            get { return state.IsShowing; }
+        }
 
         protected override bool ShowWithoutActivation
         {
@@ -86,7 +95,7 @@ namespace Murmur.App.Ui
         public void ShowMode(OverlayMode overlayMode, string text)
         {
             if (disposed) return;
-            mode = overlayMode;
+            state.Enter(overlayMode, DateTime.UtcNow);
             caption = text == null ? String.Empty : text;
 
             if (overlayMode == OverlayMode.Hidden)
@@ -106,7 +115,6 @@ namespace Murmur.App.Ui
                 }
             }
 
-            shownAt = DateTime.UtcNow;
             ApplyBounds();
             Render(0.0);
             ShowNoActivate();
@@ -133,25 +141,21 @@ namespace Murmur.App.Ui
 
         private void OnTick(object sender, EventArgs e)
         {
-            if (mode == OverlayMode.Hidden)
+            if (state.Mode == OverlayMode.Hidden)
             {
                 timer.Stop();
                 return;
             }
 
-            double seconds = (DateTime.UtcNow - shownAt).TotalSeconds;
-            if (mode == OverlayMode.Done)
+            DateTime now = DateTime.UtcNow;
+            double seconds = (now - state.ShownAt).TotalSeconds;
+            if (state.ShouldHide(now))
             {
-                if (seconds >= 1.1) ShowMode(OverlayMode.Hidden, null);
-                return;
-            }
-            if (mode == OverlayMode.Error)
-            {
-                if (seconds >= 3.5) ShowMode(OverlayMode.Hidden, null);
+                ShowMode(OverlayMode.Hidden, null);
                 return;
             }
 
-            if (mode == OverlayMode.Recording)
+            if (state.Mode == OverlayMode.Recording)
             {
                 float level;
                 lock (sync)
@@ -171,7 +175,7 @@ namespace Murmur.App.Ui
             float scale = GetScale();
             Rectangle area = screen.WorkingArea;
             int margin = (int)Math.Round(24f * scale);
-            Size size = Measure(mode, caption, scale);
+            Size size = Measure(state.Mode, caption, scale);
             int maximumWidth = area.Width - margin * 2;
             if (maximumWidth > 64 && size.Width > maximumWidth) size.Width = maximumWidth;
             Rectangle bounds = OverlayLayout.Place(area, size, PlaceAtTop, margin);
@@ -218,7 +222,7 @@ namespace Murmur.App.Ui
 
         private void DrawContent(Graphics graphics, int width, int height, double seconds)
         {
-            switch (mode)
+            switch (state.Mode)
             {
                 case OverlayMode.Recording:
                     DrawRecording(graphics, width, height);
