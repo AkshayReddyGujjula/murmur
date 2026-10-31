@@ -11,8 +11,10 @@ Build first: `node scripts/build.mjs build`. Close any running `Murmur.Probe.exe
 3. **Second take straight after**: same again. The text must be only the new sentence
    (no leftovers from take 1).
 4. **Cancel**: Ctrl+Space, speak, press Esc. The pill disappears and the clipboard is unchanged.
-5. **Cancel while starting**: Ctrl+Space then immediately Ctrl+Space again before the waveform.
-   The pill disappears; nothing is copied.
+5. **Early second press**: set the engine to *Start on demand*, press Ctrl+Space and then press it
+   again while the dots still show. The pill disappears and nothing is copied. With the engine
+   already ready, an early second press finalizes whatever was heard. A silent take shows
+   *No speech detected*, and no words are lost if you started talking early.
 6. **No speech**: Ctrl+Space, stay silent 3 s, Ctrl+Space. You should see *No speech detected*.
 7. **Recent**: tray menu → Recent lists the takes; clicking one copies it again.
 8. **Long take**: 2–7 minutes; opening and closing sentences both present.
