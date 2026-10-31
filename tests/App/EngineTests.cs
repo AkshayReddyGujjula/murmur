@@ -12,6 +12,8 @@ namespace Murmur.Tests.App
     internal static class EngineTests
     {
         private static readonly string Rule = new string('\u2500', 40);
+        internal static readonly object SafetyGate = new object();
+        internal static int NewlineWrites;
         private static int _assertions;
 
         public static int Main()
@@ -25,6 +27,12 @@ namespace Murmur.Tests.App
                 EngineTakeTests();
                 EngineFailureTests();
                 EngineLifecycleTests();
+                EngineCancelQuietTests();
+                EngineStopPhaseTests();
+                EngineExportSafetyTests();
+                EngineFaultTests();
+                EnginePromptSafetyTests();
+                EngineWriteSafetyTests();
                 Console.WriteLine("PASS: " + _assertions + " engine assertions.");
                 return 0;
             }
@@ -141,6 +149,21 @@ namespace Murmur.Tests.App
             Check(!noRules.HasComposer, "composer needs rules");
             Check(noRules.Kind == ScreenKind.Unknown, "prompt without rules is unknown");
 
+            // Dictated text may contain "listening"; only status lines outside
+            // the composer block may confirm the listening state.
+            ScreenReading dictated = ScreenParser.Read(ReadyScreen("I was listening..."));
+            Check(dictated.Kind == ScreenKind.Ready, "dictated listening text stays ready");
+            Check(dictated.ComposerText == "I was listening...", "dictated listening text preserved");
+
+            ScreenReading dictatedEllipsis = ScreenParser.Read(ReadyScreen("I was listening\u2026"));
+            Check(dictatedEllipsis.Kind == ScreenKind.Ready, "dictated listening ellipsis stays ready");
+
+            ScreenReading dictatedMultiline = ScreenParser.Read(
+                "working\n" + Rule + "\n\u276f I was\n  listening... to the radio\n" + Rule + "\n");
+            Check(dictatedMultiline.Kind == ScreenKind.Ready, "multiline dictated listening stays ready");
+            Check(dictatedMultiline.ComposerText == "I was listening... to the radio",
+                "multiline dictated listening preserved");
+
             Console.WriteLine("PASS: ScreenParser fixtures and synthetic screens.");
         }
 
@@ -244,8 +267,11 @@ namespace Murmur.Tests.App
                 holding = true;
                 harness.Engine.BeginTake();
                 Check(harness.WaitState(EngineState.Recording, 3000), "second take records");
+                holding = false;
+                terminal.SetScreen(ReadyScreen(""));
                 harness.Engine.CancelTake();
-                Check(harness.WaitState(EngineState.Ready, 2000), "second take cancels");
+                Check(harness.WaitState(EngineState.Ready, 5000), "second take cancels");
+                Check(harness.WaitDiscardedCount(1, 1000), "second take raises discarded once");
                 Check(harness.TranscriptCount == 1, "cancel does not add transcript");
             }
             Console.WriteLine("PASS: Listening, finalize, export and second take.");
@@ -309,13 +335,16 @@ namespace Murmur.Tests.App
                 holding = false;
                 FakeTerminal terminal = harness.TerminalAt(0);
                 FakeSession session = harness.SessionAt(0);
-                terminal.SetScreen(ReadyScreen("partial words"));
                 harness.Engine.CancelTake();
+                Check(harness.WaitState(EngineState.Finalizing, 1000),
+                    "cancel enters quiet before late text");
+                terminal.SetScreen(ReadyScreen("partial words"));
                 Check(WaitUntil(delegate
                 {
                     return terminal.ContainsWrite("\x07") && !File.Exists(session.ExportPath);
                 }, 3000), "cancel discards through export");
                 Check(harness.WaitState(EngineState.Ready, 2000), "cancel returns ready");
+                Check(harness.WaitDiscardedCount(1, 2000), "cancel raises discarded once");
                 Thread.Sleep(100);
                 Check(harness.TranscriptCount == 0, "cancel never raises transcript");
             }
@@ -347,10 +376,20 @@ namespace Murmur.Tests.App
                 Check(harness.WaitState(EngineState.Ready, 3000), "restart reaches ready");
             }
 
-            using (Harness harness = new Harness(delegate { return UnknownScreen(); },
+            bool pendingHolding = true;
+            int terminalStarts = 0;
+            using (Harness harness = new Harness(
+                delegate
+                {
+                    terminalStarts++;
+                    return terminalStarts == 1 ? UnknownScreen() : ReadyScreen("");
+                },
                 delegate(FakeTerminal terminal, FakeSession session)
                 {
-                    terminal.OnSpace = delegate { terminal.SetScreen(ListeningScreen("")); };
+                    terminal.OnSpace = delegate
+                    {
+                        if (pendingHolding) terminal.SetScreen(ListeningScreen(""));
+                    };
                 }))
             {
                 harness.Engine.BeginTake();
@@ -362,8 +401,10 @@ namespace Murmur.Tests.App
                 Check(terminal.WriteCount == 0, "no keys before ready");
                 terminal.SetScreen(ReadyScreen(""));
                 Check(harness.WaitState(EngineState.Recording, 3000), "pending take begins when ready");
+                pendingHolding = false;
+                terminal.SetScreen(ReadyScreen(""));
                 harness.Engine.CancelTake();
-                Check(harness.WaitState(EngineState.Ready, 2000), "pending take cancels");
+                Check(harness.WaitState(EngineState.Ready, 5000), "pending take cancels");
             }
 
             bool holding = true;
@@ -386,8 +427,11 @@ namespace Murmur.Tests.App
                 FakeTerminal terminal = harness.TerminalAt(0);
                 Check(terminal.WriteAt(0) == "\x07", "existing composer exported first");
                 Check(harness.TranscriptCount == 0, "draft export is not a transcript");
+                holding = false;
+                terminal.SetScreen(ReadyScreen(""));
                 harness.Engine.CancelTake();
-                Check(harness.WaitState(EngineState.Ready, 2000), "draft cancel returns ready");
+                Check(harness.WaitState(EngineState.Ready, 5000), "draft cancel returns ready");
+                Check(harness.WaitDiscardedCount(1, 2000), "draft cancel raises discarded");
             }
 
             using (Harness harness = new Harness(delegate { return ReadyScreen(""); }, null))
@@ -436,7 +480,405 @@ namespace Murmur.Tests.App
                 Check(harness.WaitState(EngineState.Ready, 3000), "recycled child ready");
             }
 
+            using (Harness harness = new Harness(delegate { return ReadyScreen("old draft"); }, null))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "closed discard setup ready");
+                FakeTerminal terminal = harness.TerminalAt(0);
+                harness.Engine.BeginTake();
+                Check(WaitUntil(delegate { return terminal.ContainsWrite("\x07"); }, 2000),
+                    "closed discard export requested");
+                terminal.RaiseClosed("terminal exited with code 1");
+                Check(harness.WaitState(EngineState.Faulted, 3000), "closed during discard faults");
+                Check(harness.WaitFailure("Claude closed unexpectedly", 2000),
+                    "closed during discard failure");
+            }
+
+            using (Harness harness = new Harness(delegate { return UnknownScreen(); }, null))
+            {
+                harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Starting, 2000), "closed pending setup starting");
+                Check(harness.WaitTerminalCount(1, 2000), "closed pending terminal exists");
+                harness.TerminalAt(0).RaiseClosed("terminal exited with code 1");
+                Check(harness.WaitFailure("Claude closed unexpectedly", 2000),
+                    "closed during pending take failure");
+            }
+
             Console.WriteLine("PASS: Closed, starting take, stale composer, unload and recycle.");
+        }
+
+        private static void EngineCancelQuietTests()
+        {
+            // The cancelled audio may be finalized by the CLI only after CancelTake.
+            bool holding = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate
+                    {
+                        if (holding) terminal.SetScreen(ListeningScreen(""));
+                    };
+                    terminal.ExportOnCtrlG = true;
+                    terminal.ExportText = "late finalized words";
+                    terminal.ClearOnExport = true;
+                }))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "cancel-quiet setup ready");
+                harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "cancel-quiet records");
+                holding = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                FakeSession session = harness.SessionAt(0);
+                harness.Engine.CancelTake();
+                Check(harness.WaitState(EngineState.Finalizing, 1000),
+                    "cancel stays finalizing while quiet");
+                terminal.SetScreen(ReadyScreen("late finalized words"));
+                Check(harness.WaitDiscardedCount(1, 3000), "late finalize raises discarded");
+                Check(harness.WaitState(EngineState.Ready, 3000), "cancel quiet returns ready");
+                Check(harness.TranscriptCount == 0, "late finalize never raises transcript");
+                Check(harness.FailureCount == 0, "late finalize has no failure");
+                Check(terminal.ContainsWrite("\x07"), "late finalize exported for discard");
+                Check(!File.Exists(session.ExportPath), "late handoff deleted");
+                Thread.Sleep(100);
+                Check(harness.DiscardedCount == 1, "cancel discarded exactly once");
+            }
+
+            // A screen that never settles hits the FinalizeTimeoutMs deadline.
+            bool stuck = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate
+                    {
+                        if (stuck) terminal.SetScreen(ListeningScreen(""));
+                    };
+                }))
+            {
+                harness.Options.FinalizeTimeoutMs = 400;
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "cancel deadline setup ready");
+                harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "cancel deadline records");
+                stuck = false;
+                harness.Engine.CancelTake();
+                Check(harness.WaitDiscardedCount(1, 3000), "cancel deadline raises discarded");
+                Check(harness.WaitTerminalCount(2, 3000), "cancel deadline recycles child");
+                Check(harness.WaitState(EngineState.Ready, 3000), "recycled child reaches ready");
+                Check(harness.TranscriptCount == 0, "cancel deadline has no transcript");
+            }
+
+            Console.WriteLine("PASS: Cancel-quiet late finalization and deadline recycle.");
+        }
+
+        private static void EngineStopPhaseTests()
+        {
+            // EndTake during the Listening phase is a normal stop, not a cancel.
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.ExportOnCtrlG = true;
+                    terminal.ExportText = "quick words";
+                    terminal.ClearOnExport = true;
+                }))
+            {
+                harness.Options.ListenTimeoutMs = 5000;
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "listening stop setup ready");
+                harness.Engine.BeginTake();
+                FakeTerminal terminal = harness.TerminalAt(0);
+                Check(WaitUntil(delegate { return terminal.WriteCount > 0; }, 2000),
+                    "hold starts before listening");
+                Check(harness.Engine.State == EngineState.Ready, "listening not observed yet");
+                terminal.SetScreen(ReadyScreen("quick words"));
+                harness.Engine.EndTake();
+                Check(harness.WaitTranscriptCount(1, 3000), "listening stop finalizes normally");
+                Check(harness.TranscriptAt(0) == "quick words", "listening stop export text");
+                Check(harness.WaitState(EngineState.Ready, 3000), "listening stop returns ready");
+                Check(harness.FailureCount == 0, "listening stop has no failure");
+                Check(harness.DiscardedCount == 0, "listening stop is not discarded");
+            }
+
+            // EndTake during Starting cancels the pending take and raises Discarded.
+            using (Harness harness = new Harness(delegate { return UnknownScreen(); }, null))
+            {
+                harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Starting, 2000), "start end goes starting");
+                Check(harness.WaitTerminalCount(1, 2000), "start end has terminal");
+                FakeTerminal terminal = harness.TerminalAt(0);
+                harness.Engine.EndTake();
+                Check(harness.WaitDiscardedCount(1, 2000), "end during starting raises discarded");
+                terminal.SetScreen(ReadyScreen(""));
+                Check(harness.WaitState(EngineState.Ready, 3000), "cancelled start settles ready");
+                Thread.Sleep(100);
+                Check(terminal.WriteCount == 0, "cancelled start writes no keys");
+                Check(harness.TranscriptCount == 0, "cancelled start has no transcript");
+                Check(harness.FailureCount == 0, "cancelled start has no failure");
+                Check(harness.DiscardedCount == 1, "cancelled start discarded exactly once");
+            }
+
+            // EndTake during a stale-composer discard also raises Discarded once.
+            using (Harness harness = new Harness(delegate { return ReadyScreen("stale draft"); }, null))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "stale discard setup ready");
+                FakeTerminal terminal = harness.TerminalAt(0);
+                harness.Engine.BeginTake();
+                Check(WaitUntil(delegate { return terminal.ContainsWrite("\x07"); }, 2000),
+                    "stale draft exported");
+                harness.Engine.EndTake();
+                Check(harness.WaitDiscardedCount(1, 2000), "end during stale discard raises discarded");
+                Check(harness.WaitState(EngineState.Ready, 3000), "stale discard settles ready");
+                Thread.Sleep(100);
+                Check(harness.DiscardedCount == 1, "stale discard discarded exactly once");
+                Check(terminal.WriteAt(0) == "\x07", "stale discard writes export first");
+                Check(terminal.WriteCount == 1, "stale discard does not start hold");
+                Check(harness.TranscriptCount == 0, "stale discard has no transcript");
+            }
+
+            Console.WriteLine("PASS: Stop during listening, starting and stale discard.");
+        }
+
+        private static void EngineExportSafetyTests()
+        {
+            // A handoff older than the request minus 2 s must never be used.
+            bool holding = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate
+                    {
+                        if (holding) terminal.SetScreen(ListeningScreen(""));
+                    };
+                    terminal.ExportOnCtrlG = true;
+                    terminal.ExportText = "stale handoff";
+                    terminal.ExportTimestampUtc = DateTime.UtcNow.AddSeconds(-30);
+                    terminal.ClearOnExport = true;
+                }))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "stale handoff setup ready");
+                harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "stale handoff records");
+                holding = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen(ReadyScreen("fresh words"));
+                harness.Engine.EndTake();
+                Check(harness.WaitFailure("Could not export the transcript", 3000),
+                    "stale handoff fails export");
+                Check(harness.TranscriptCount == 0, "stale handoff never raises transcript");
+                Check(harness.WaitState(EngineState.Ready, 3000), "stale handoff returns ready");
+            }
+
+            // Failing to delete a stale ExportPath fails the export and recycles.
+            List<FileStream> locks = new List<FileStream>();
+            try
+            {
+                using (Harness harness = new Harness(delegate { return ReadyScreen("stale draft"); },
+                    delegate(FakeTerminal terminal, FakeSession session)
+                    {
+                        locks.Add(new FileStream(session.ExportPath, FileMode.Create,
+                            FileAccess.ReadWrite, FileShare.None));
+                    }))
+                {
+                    harness.Engine.Warm();
+                    Check(harness.WaitState(EngineState.Ready, 3000), "locked handoff setup ready");
+                    harness.Engine.BeginTake();
+                    Check(harness.WaitFailure("Could not export the transcript", 3000),
+                        "locked stale handoff fails export");
+                    Check(harness.WaitTerminalCount(2, 3000), "locked stale handoff recycles child");
+                    Check(harness.WaitState(EngineState.Ready, 3000), "locked stale handoff settles ready");
+                    Check(harness.TranscriptCount == 0, "locked stale handoff no transcript");
+                    CloseAll(locks);
+                }
+            }
+            finally
+            {
+                CloseAll(locks);
+            }
+
+            // Failing to delete the handoff after reading still raises the
+            // transcript first, then recycles the child.
+            bool readHolding = true;
+            List<FileStream> readLocks = new List<FileStream>();
+            try
+            {
+                using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                    delegate(FakeTerminal terminal, FakeSession session)
+                    {
+                        terminal.OnSpace = delegate
+                        {
+                            if (readHolding) terminal.SetScreen(ListeningScreen(""));
+                        };
+                        terminal.ExportOnCtrlG = true;
+                        terminal.ExportText = "delete me";
+                        terminal.ClearOnExport = true;
+                        terminal.OnCtrlG = delegate
+                        {
+                            readLocks.Add(new FileStream(terminal.ExportPath, FileMode.Open,
+                                FileAccess.Read, FileShare.Read));
+                        };
+                    }))
+                {
+                    harness.Engine.Warm();
+                    Check(harness.WaitState(EngineState.Ready, 3000), "locked read setup ready");
+                    harness.Engine.BeginTake();
+                    Check(harness.WaitState(EngineState.Recording, 3000), "locked read records");
+                    readHolding = false;
+                    FakeTerminal terminal = harness.TerminalAt(0);
+                    terminal.SetScreen(ReadyScreen("delete me"));
+                    harness.Engine.EndTake();
+                    Check(harness.WaitTranscriptCount(1, 3000), "locked read raises transcript");
+                    Check(harness.TranscriptAt(0) == "delete me", "locked read transcript text");
+                    Check(harness.WaitTerminalCount(2, 3000), "locked read recycles child");
+                    Check(harness.WaitState(EngineState.Ready, 3000), "locked read recycled ready");
+                    Check(harness.DiscardedCount == 0, "locked read is not discarded");
+                    CloseAll(readLocks);
+                }
+            }
+            finally
+            {
+                CloseAll(readLocks);
+            }
+
+            Console.WriteLine("PASS: Export freshness, stale delete failure and handoff cleanup.");
+        }
+
+        private static void EngineFaultTests()
+        {
+            bool throwing = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.ThrowOnWrite = throwing;
+                    terminal.OnSpace = delegate { terminal.SetScreen(ListeningScreen("")); };
+                }))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "fault setup ready");
+                harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Faulted, 3000), "handler exception faults engine");
+                Check(harness.WaitFailure("Murmur engine error", 2000), "handler exception failure");
+                Check(harness.HasDiagnostic("InvalidOperationException"),
+                    "handler exception diagnostic is the type");
+                Check(harness.DiagnosticCount == 1, "handler exception one diagnostic");
+                Check(!harness.HasDiagnostic("fake terminal write failure"),
+                    "diagnostic never carries exception text");
+                Check(harness.TerminalAt(0).IsDisposed, "handler exception disposes child");
+
+                throwing = false;
+                harness.Engine.Warm();
+                Check(harness.WaitTerminalCount(2, 3000), "warm after handler exception restarts");
+                Check(harness.WaitState(EngineState.Ready, 3000), "warm after handler exception ready");
+                harness.Engine.BeginTake();
+                Check(WaitUntil(delegate { return harness.TerminalAt(1).WriteCount > 0; }, 2000),
+                    "begin after handler exception still works");
+                harness.Engine.Unload();
+                Check(harness.WaitState(EngineState.Stopped, 2000),
+                    "unload after handler exception still works");
+            }
+
+            Console.WriteLine("PASS: Handler exceptions fault without stopping the engine thread.");
+        }
+
+        private static void EnginePromptSafetyTests()
+        {
+            const string SignIn = "Sign in needed \u2014 open the tray menu and choose Sign in";
+            const string Setup = "Claude needs one-time setup \u2014 choose Sign in from the tray menu";
+
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); }, null))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "sign-in begin setup ready");
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen("Not logged in. Please run claude /login again.\n");
+                Thread.Sleep(100);
+                harness.Engine.BeginTake();
+                Check(harness.WaitFailure(SignIn, 2000), "begin on sign-in raises sign-in failure");
+                Check(harness.WaitState(EngineState.Faulted, 2000), "begin on sign-in faults");
+                Check(terminal.WriteCount == 0, "begin on sign-in writes no keys");
+                Check(harness.TranscriptCount == 0, "begin on sign-in has no transcript");
+            }
+
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); }, null))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "setup begin setup ready");
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen("Do you trust the files in this folder?\nYes, proceed\n");
+                Thread.Sleep(100);
+                harness.Engine.BeginTake();
+                Check(harness.WaitFailure(Setup, 2000), "begin on setup raises setup failure");
+                Check(harness.WaitState(EngineState.Faulted, 2000), "begin on setup faults");
+                Check(terminal.WriteCount == 0, "begin on setup writes no keys");
+            }
+
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); }, null))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "unknown begin setup ready");
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen("starting claude\n");
+                Thread.Sleep(100);
+                harness.Engine.BeginTake();
+                Check(harness.WaitFailure("Claude did not start", 2000),
+                    "begin on unknown raises start failure");
+                Check(harness.WaitState(EngineState.Faulted, 2000), "begin on unknown faults");
+                Check(terminal.WriteCount == 0, "begin on unknown writes no keys");
+            }
+
+            // The post-export clear check must also see a safe ready screen.
+            bool holding = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate
+                    {
+                        if (holding) terminal.SetScreen(ListeningScreen(""));
+                    };
+                    terminal.ExportOnCtrlG = true;
+                    terminal.ExportText = "hello";
+                    terminal.ScreenAfterExport = "Do you trust the files in this folder?\nYes, proceed\n";
+                }))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "clear check setup ready");
+                harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "clear check records");
+                holding = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen(ReadyScreen("hello"));
+                harness.Engine.EndTake();
+                Check(harness.WaitTranscriptCount(1, 3000), "clear check still exports transcript");
+                Check(harness.WaitFailure(Setup, 3000), "uncleared safe prompt raises setup failure");
+                Check(harness.WaitState(EngineState.Faulted, 3000), "uncleared safe prompt faults");
+            }
+
+            Console.WriteLine("PASS: Prompt safety before holds and after export.");
+        }
+
+        private static void EngineWriteSafetyTests()
+        {
+            lock (SafetyGate)
+            {
+                Check(NewlineWrites == 0, "engine never wrote CR or LF to the terminal");
+            }
+            Console.WriteLine("PASS: Engine write safety invariant.");
+        }
+
+        private static void CloseAll(List<FileStream> streams)
+        {
+            for (int i = 0; i < streams.Count; i++)
+            {
+                try
+                {
+                    streams[i].Dispose();
+                }
+                catch (IOException)
+                {
+                }
+            }
+            streams.Clear();
         }
 
         private static void TryDelete(string path)
@@ -468,6 +910,7 @@ namespace Murmur.Tests.App
             private readonly List<string> _transcripts = new List<string>();
             private readonly List<string> _diagnostics = new List<string>();
             private readonly List<int> _eventThreads = new List<int>();
+            private int _discarded;
 
             public readonly EngineOptions Options;
             public readonly DictationEngine Engine;
@@ -520,6 +963,13 @@ namespace Murmur.Tests.App
                         _diagnostics.Add(message);
                     }
                 };
+                Engine.Discarded += delegate
+                {
+                    lock (_gate)
+                    {
+                        _discarded++;
+                    }
+                };
             }
 
             public int TerminalCount
@@ -545,6 +995,16 @@ namespace Murmur.Tests.App
             public int DiagnosticCount
             {
                 get { lock (_gate) { return _diagnostics.Count; } }
+            }
+
+            public int DiscardedCount
+            {
+                get { lock (_gate) { return _discarded; } }
+            }
+
+            public bool HasDiagnostic(string message)
+            {
+                lock (_gate) { return _diagnostics.Contains(message); }
             }
 
             public FakeTerminal TerminalAt(int index)
@@ -600,6 +1060,11 @@ namespace Murmur.Tests.App
             public bool WaitTranscriptCount(int count, int timeoutMs)
             {
                 return EngineTests.WaitUntil(delegate { return TranscriptCount >= count; }, timeoutMs);
+            }
+
+            public bool WaitDiscardedCount(int count, int timeoutMs)
+            {
+                return EngineTests.WaitUntil(delegate { return DiscardedCount >= count; }, timeoutMs);
             }
 
             public void Dispose()
@@ -659,6 +1124,10 @@ namespace Murmur.Tests.App
             public string ExportText = "";
             public bool ExportOnCtrlG;
             public bool ClearOnExport;
+            public bool ThrowOnWrite;
+            public string ScreenAfterExport;
+            public DateTime? ExportTimestampUtc;
+            public Action OnCtrlG;
             public Action OnSpace;
 
             public FakeTerminal(string screen)
@@ -720,17 +1189,32 @@ namespace Murmur.Tests.App
             public bool TryWrite(string text)
             {
                 Action space = null;
+                Action ctrlG = null;
+                string screenAfter = null;
+                bool clear = false;
                 bool export = false;
+                bool throwOnWrite;
                 lock (_gate)
                 {
                     if (_disposed)
                     {
                         return false;
                     }
+                    if (text != null && (text.IndexOf('\r') >= 0 || text.IndexOf('\n') >= 0))
+                    {
+                        lock (EngineTests.SafetyGate)
+                        {
+                            EngineTests.NewlineWrites++;
+                        }
+                    }
                     _writes.Add(text);
+                    throwOnWrite = ThrowOnWrite;
                     if (text == "\x07")
                     {
                         export = true;
+                        ctrlG = OnCtrlG;
+                        screenAfter = ScreenAfterExport;
+                        clear = ClearOnExport;
                     }
                     else if (text == " ")
                     {
@@ -738,6 +1222,10 @@ namespace Murmur.Tests.App
                     }
                 }
 
+                if (throwOnWrite)
+                {
+                    throw new InvalidOperationException("fake terminal write failure");
+                }
                 if (export)
                 {
                     if (ExportOnCtrlG && ExportPath != null)
@@ -745,6 +1233,10 @@ namespace Murmur.Tests.App
                         try
                         {
                             File.WriteAllText(ExportPath, ExportText, new UTF8Encoding(false));
+                            if (ExportTimestampUtc.HasValue)
+                            {
+                                File.SetLastWriteTimeUtc(ExportPath, ExportTimestampUtc.Value);
+                            }
                         }
                         catch (IOException)
                         {
@@ -753,9 +1245,17 @@ namespace Murmur.Tests.App
                         {
                         }
                     }
-                    if (ClearOnExport)
+                    if (screenAfter != null)
+                    {
+                        SetScreen(screenAfter);
+                    }
+                    else if (clear)
                     {
                         SetScreen(ReadyScreen(""));
+                    }
+                    if (ctrlG != null)
+                    {
+                        ctrlG();
                     }
                 }
                 if (space != null)

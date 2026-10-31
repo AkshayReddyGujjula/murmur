@@ -35,8 +35,10 @@ namespace Murmur.App.Engine
                 lines[i] = TrimLine(lines[i]);
             }
 
-            ParseComposer(lines, reading);
-            reading.Kind = DetectKind(lines, reading.HasComposer);
+            int composerStart;
+            int composerEnd;
+            ParseComposer(lines, reading, out composerStart, out composerEnd);
+            reading.Kind = DetectKind(lines, reading.HasComposer, composerStart, composerEnd);
             return reading;
         }
 
@@ -84,8 +86,11 @@ namespace Murmur.App.Engine
             return -1;
         }
 
-        private static void ParseComposer(string[] lines, ScreenReading reading)
+        private static void ParseComposer(string[] lines, ScreenReading reading, out int composerStart, out int composerEnd)
         {
+            composerStart = -1;
+            composerEnd = -1;
+
             // Prefer the lowest composer on screen: it is the actual input area.
             for (int i = lines.Length - 1; i >= 0; i--)
             {
@@ -137,6 +142,8 @@ namespace Murmur.App.Engine
                 }
                 reading.HasComposer = true;
                 reading.ComposerText = text;
+                composerStart = i;
+                composerEnd = ruleBelow - 1;
                 return;
             }
         }
@@ -155,10 +162,16 @@ namespace Murmur.App.Engine
             builder.Append(value);
         }
 
-        private static ScreenKind DetectKind(string[] lines, bool hasComposer)
+        private static ScreenKind DetectKind(string[] lines, bool hasComposer, int composerStart, int composerEnd)
         {
             for (int i = 0; i < lines.Length; i++)
             {
+                // Dictated text can contain the word "listening". Only status
+                // lines outside the composer block may confirm listening.
+                if (composerStart >= 0 && i >= composerStart && i <= composerEnd)
+                {
+                    continue;
+                }
                 if (Contains(lines[i], "listening\u2026") || Contains(lines[i], "listening..."))
                 {
                     return ScreenKind.Listening;

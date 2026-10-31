@@ -14,6 +14,8 @@ namespace Murmur.App.Engine
     public sealed class DictationEngine : IDisposable
     {
         private const int ClearComposerTimeoutMs = 3000;
+        private const int CancelQuietMs = 2500;
+        private const int ExportFreshnessSlackSeconds = 2;
         private const int MaxExportBytes = 1048576;
         private const int ExportReadAttempts = 5;
         private const int ExportReadRetryMs = 20;
@@ -31,7 +33,6 @@ namespace Murmur.App.Engine
         private int _generation;
         private int _disposed;
         private bool _closedInbox;
-        private bool _exitRequested;
 
         private ITerminalHost _terminal;
         private IEngineSession _session;
@@ -44,14 +45,17 @@ namespace Murmur.App.Engine
         private ExportPurpose _exportPurpose;
         private bool _pendingTake;
         private bool _beginAfterDiscard;
+        private bool _takeRequested;
         private string _lastComposer = "";
         private long _startDeadline;
         private long _listenDeadline;
         private long _finalDeadline;
         private long _exportDeadline;
+        private long _cancelDeadline;
         private long _clearDeadline;
         private long _stableSince;
         private long _emptySince = -1;
+        private DateTime _exportRequestUtc;
 
         public DictationEngine(EngineOptions options, Func<ITerminalHost> terminals, Func<IEngineSession> sessions)
         {
@@ -79,6 +83,7 @@ namespace Murmur.App.Engine
         public event Action<string> TranscriptReady;
         public event Action<string> Failed;
         public event Action<string> Diagnostic;
+        public event Action Discarded;
 
         public void Warm()
         {
@@ -140,6 +145,7 @@ namespace Murmur.App.Engine
                         _phase = TakePhase.None;
                         _pendingTake = false;
                         _beginAfterDiscard = false;
+                        _takeRequested = false;
                         CleanupResources();
                         SetState(EngineState.Stopped);
                         break;
@@ -149,14 +155,9 @@ namespace Murmur.App.Engine
                     {
                         Handle(message);
                     }
-                    catch (Exception)
+                    catch (Exception error)
                     {
-                        HandleEngineError();
-                    }
-
-                    if (_exitRequested)
-                    {
-                        break;
+                        HandleEngineError(error);
                     }
                 }
             }
@@ -234,38 +235,44 @@ namespace Murmur.App.Engine
             EngineState state = (EngineState)_state;
             if (state == EngineState.Stopped || state == EngineState.Faulted)
             {
+                _takeRequested = true;
                 _pendingTake = true;
                 StartChild();
                 return;
             }
             if (state == EngineState.Starting)
             {
+                _takeRequested = true;
                 _pendingTake = true;
                 return;
             }
-            if (state == EngineState.Ready)
+            if (state != EngineState.Ready)
             {
-                if (_terminal == null || _screen == null)
+                return;
+            }
+            if (_terminal == null || _screen == null)
+            {
+                _takeRequested = true;
+                _pendingTake = true;
+                StartChild();
+                return;
+            }
+
+            _takeRequested = true;
+            if (_phase == TakePhase.None)
+            {
+                BeginFromReady();
+            }
+            else if (_phase == TakePhase.Discard)
+            {
+                if (!_beginAfterDiscard)
                 {
                     _pendingTake = true;
-                    StartChild();
-                    return;
                 }
-                if (_phase == TakePhase.None)
-                {
-                    BeginFromReady();
-                }
-                else if (_phase == TakePhase.Discard)
-                {
-                    if (!_beginAfterDiscard)
-                    {
-                        _pendingTake = true;
-                    }
-                }
-                else
-                {
-                    _pendingTake = true;
-                }
+            }
+            else
+            {
+                _pendingTake = true;
             }
         }
 
@@ -275,22 +282,32 @@ namespace Murmur.App.Engine
             if (state == EngineState.Starting)
             {
                 _pendingTake = false;
+                RaiseDiscardedOnce();
                 return;
             }
             if (_phase == TakePhase.Discard)
             {
                 _beginAfterDiscard = false;
                 _pendingTake = false;
+                RaiseDiscardedOnce();
                 return;
             }
             if (_phase == TakePhase.Listening)
             {
-                CancelActiveTake();
+                // The hold is active but "listening" was not observed yet.
+                // A stop here is still a normal stop, not a cancel.
+                StartFinalWait();
                 return;
             }
             if (_phase == TakePhase.Recording)
             {
                 StartFinalWait();
+                return;
+            }
+            if (_pendingTake)
+            {
+                _pendingTake = false;
+                RaiseDiscardedOnce();
             }
         }
 
@@ -300,6 +317,7 @@ namespace Murmur.App.Engine
             if (state == EngineState.Starting)
             {
                 _pendingTake = false;
+                RaiseDiscardedOnce();
                 return;
             }
             if (_phase == TakePhase.Listening || _phase == TakePhase.Recording ||
@@ -308,12 +326,15 @@ namespace Murmur.App.Engine
                 CancelActiveTake();
                 return;
             }
+            if (_phase == TakePhase.CancelQuiet)
+            {
+                return;
+            }
             if (_phase == TakePhase.ExportWait)
             {
                 StopHold();
                 _exportPurpose = ExportPurpose.Discard;
                 _beginAfterDiscard = false;
-                SetState(EngineState.Ready);
                 return;
             }
             if (_phase == TakePhase.ClearWait)
@@ -322,12 +343,18 @@ namespace Murmur.App.Engine
                 _phase = TakePhase.None;
                 _generation++;
                 SetState(EngineState.Ready);
+                if (_pendingTake)
+                {
+                    _pendingTake = false;
+                    RaiseDiscardedOnce();
+                }
                 return;
             }
             if (_phase == TakePhase.Discard)
             {
                 _beginAfterDiscard = false;
                 _pendingTake = false;
+                RaiseDiscardedOnce();
                 return;
             }
             if (state == EngineState.Recording || state == EngineState.Finalizing)
@@ -336,6 +363,12 @@ namespace Murmur.App.Engine
                 _phase = TakePhase.None;
                 _generation++;
                 SetState(EngineState.Ready);
+                RaiseDiscardedOnce();
+            }
+            if (_pendingTake)
+            {
+                _pendingTake = false;
+                RaiseDiscardedOnce();
             }
         }
 
@@ -346,6 +379,7 @@ namespace Murmur.App.Engine
             _phase = TakePhase.None;
             _pendingTake = false;
             _beginAfterDiscard = false;
+            _takeRequested = false;
             CleanupResources();
             SetState(EngineState.Stopped);
         }
@@ -379,9 +413,7 @@ namespace Murmur.App.Engine
                 return;
             }
 
-            EngineState state = (EngineState)_state;
-            bool active = state == EngineState.Starting || state == EngineState.Recording ||
-                          state == EngineState.Finalizing;
+            bool active = _phase != TakePhase.None || _pendingTake || _beginAfterDiscard;
 
             StopAllTimers();
             _generation++;
@@ -392,6 +424,10 @@ namespace Murmur.App.Engine
             if (active)
             {
                 RaiseFailed("Claude closed unexpectedly");
+            }
+            else
+            {
+                _takeRequested = false;
             }
             SetState(EngineState.Faulted);
         }
@@ -411,6 +447,7 @@ namespace Murmur.App.Engine
 
             if (_phase == TakePhase.Listening) { PollListen(message.Generation); return; }
             if (_phase == TakePhase.FinalWait) { PollFinalize(message.Generation); return; }
+            if (_phase == TakePhase.CancelQuiet) { PollCancelQuiet(message.Generation); return; }
             if (_phase == TakePhase.ExportWait) { PollExport(message.Generation); return; }
             if (_phase == TakePhase.ClearWait) { PollClear(message.Generation); return; }
             if (_phase == TakePhase.Discard) { PollExport(message.Generation); }
@@ -519,12 +556,43 @@ namespace Murmur.App.Engine
                 return;
             }
             ScreenReading reading = ReadScreen();
+            if (reading.Kind != ScreenKind.Ready || !reading.HasComposer)
+            {
+                FailPrompt(PromptFailureMessage(reading.Kind));
+                return;
+            }
             if (reading.ComposerText.Length > 0)
             {
                 StartDiscard(true);
                 return;
             }
             BeginHold();
+        }
+
+        private static string PromptFailureMessage(ScreenKind kind)
+        {
+            if (kind == ScreenKind.NeedsSignIn)
+            {
+                return "Sign in needed \u2014 open the tray menu and choose Sign in";
+            }
+            if (kind == ScreenKind.NeedsSetup)
+            {
+                return "Claude needs one-time setup \u2014 choose Sign in from the tray menu";
+            }
+            return "Claude did not start";
+        }
+
+        private void FailPrompt(string message)
+        {
+            StopAllTimers();
+            StopHold();
+            _phase = TakePhase.None;
+            _pendingTake = false;
+            _beginAfterDiscard = false;
+            _generation++;
+            CleanupResources();
+            RaiseFailed(message);
+            SetState(EngineState.Faulted);
         }
 
         private void BeginHold()
@@ -649,16 +717,23 @@ namespace Murmur.App.Engine
             _exportPurpose = ExportPurpose.Transcript;
             _generation++;
             int generation = _generation;
-            if (!StartExportRequest())
+            bool deleteFailed;
+            if (!StartExportRequest(out deleteFailed))
             {
+                if (deleteFailed)
+                {
+                    FailExportAndRecycle();
+                    return;
+                }
                 FailTake("Could not export the transcript", false);
                 return;
             }
             ArmPoll(generation);
         }
 
-        private bool StartExportRequest()
+        private bool StartExportRequest(out bool deleteFailed)
         {
+            deleteFailed = false;
             IEngineSession session = _session;
             ITerminalHost terminal = _terminal;
             if (session == null || terminal == null || session.ExportPath == null)
@@ -676,20 +751,19 @@ namespace Murmur.App.Engine
             }
             catch (IOException)
             {
+                deleteFailed = true;
+                return false;
             }
             catch (UnauthorizedAccessException)
             {
-            }
-
-            _exportDeadline = Now() + _options.ExportTimeoutMs;
-            try
-            {
-                return terminal.TryWrite("\x07");
-            }
-            catch (Exception)
-            {
+                deleteFailed = true;
                 return false;
             }
+
+            _exportRequestUtc = DateTime.UtcNow;
+            _exportDeadline = Now() + _options.ExportTimeoutMs;
+            // Let a throwing host reach the message-handler guard in Run().
+            return terminal.TryWrite("\x07");
         }
 
         private void PollExport(int generation)
@@ -709,18 +783,27 @@ namespace Murmur.App.Engine
             }
 
             string path = session.ExportPath;
-            if (File.Exists(path))
+            if (File.Exists(path) && IsFreshHandoff(path))
             {
                 string text;
                 if (TryReadExport(path, out text))
                 {
-                    DeleteExport(path);
+                    bool deleted = DeleteExport(path);
                     if (_exportPurpose == ExportPurpose.Transcript)
                     {
                         string trimmed = text.Trim();
                         if (trimmed.Length > 0)
                         {
                             RaiseTranscript(trimmed);
+                        }
+                        else
+                        {
+                            RaiseDiscardedOnce();
+                        }
+                        if (!deleted)
+                        {
+                            RecycleChild("Recycled Claude after the handoff file could not be deleted");
+                            return;
                         }
                         _phase = TakePhase.ClearWait;
                         _clearDeadline = Now() + ClearComposerTimeoutMs;
@@ -750,6 +833,11 @@ namespace Murmur.App.Engine
         private void PollClear(int generation)
         {
             ScreenReading reading = ReadScreen();
+            if (reading.Kind != ScreenKind.Ready || !reading.HasComposer)
+            {
+                FailPrompt(PromptFailureMessage(reading.Kind));
+                return;
+            }
             if (reading.ComposerText.Length == 0)
             {
                 CompleteToReady();
@@ -777,10 +865,25 @@ namespace Murmur.App.Engine
 
         private void RecycleChild()
         {
-            RaiseDiagnostic("Recycled Claude after the export left the composer non-empty");
+            RecycleChild("Recycled Claude after the export left the composer non-empty");
+        }
+
+        private void RecycleChild(string diagnostic)
+        {
+            RaiseDiagnostic(diagnostic);
             _phase = TakePhase.None;
             _generation++;
             StartChild();
+        }
+
+        private void FailExportAndRecycle()
+        {
+            StopAllTimers();
+            StopHold();
+            _phase = TakePhase.None;
+            _generation++;
+            RaiseFailed("Could not export the transcript");
+            RecycleChild("Recycled Claude after the export could not start");
         }
 
         private void StartDiscard(bool beginAfter)
@@ -793,8 +896,14 @@ namespace Murmur.App.Engine
             int generation = _generation;
             SetState(EngineState.Ready);
 
-            if (!StartExportRequest())
+            bool deleteFailed;
+            if (!StartExportRequest(out deleteFailed))
             {
+                if (deleteFailed)
+                {
+                    FailExportAndRecycle();
+                    return;
+                }
                 CompleteDiscard();
                 return;
             }
@@ -814,6 +923,7 @@ namespace Murmur.App.Engine
                 BeginHold();
                 return;
             }
+            RaiseDiscardedOnce();
             if (_pendingTake)
             {
                 _pendingTake = false;
@@ -824,15 +934,103 @@ namespace Murmur.App.Engine
         private void CancelActiveTake()
         {
             StopHold();
-            _phase = TakePhase.None;
+            _phase = TakePhase.CancelQuiet;
             _generation++;
-            SetState(EngineState.Ready);
+            int generation = _generation;
+            SetState(EngineState.Finalizing);
 
             ScreenReading reading = ReadScreen();
-            if (reading.ComposerText.Length > 0)
+            _lastComposer = reading.ComposerText;
+            _stableSince = Now();
+            _emptySince = -1;
+            if (reading.Kind != ScreenKind.Listening && reading.ComposerText.Length == 0)
             {
-                StartDiscard(false);
+                _emptySince = Now();
             }
+            // Arm the deadline after the empty window starts so a 2500 ms
+            // FinalizeTimeoutMs test configuration cannot preempt the quiet
+            // window by a few milliseconds.
+            _cancelDeadline = Now() + _options.FinalizeTimeoutMs;
+            ArmPoll(generation);
+        }
+
+        private void PollCancelQuiet(int generation)
+        {
+            ScreenReading reading = ReadScreen();
+            bool listening = reading.Kind == ScreenKind.Listening;
+            string text = reading.ComposerText;
+
+            if (!listening && text.Length == 0)
+            {
+                _lastComposer = "";
+                _stableSince = Now();
+                if (_emptySince < 0)
+                {
+                    _emptySince = Now();
+                }
+                else if (Now() - _emptySince >= CancelQuietMs)
+                {
+                    RaiseDiscardedOnce();
+                    _phase = TakePhase.None;
+                    _generation++;
+                    SetState(EngineState.Ready);
+                    if (_pendingTake)
+                    {
+                        _pendingTake = false;
+                        BeginFromReady();
+                    }
+                    return;
+                }
+            }
+            else if (!listening)
+            {
+                _emptySince = -1;
+                if (!string.Equals(text, _lastComposer, StringComparison.Ordinal))
+                {
+                    _lastComposer = text;
+                    _stableSince = Now();
+                }
+                else if (Now() - _stableSince >= _options.StableMs)
+                {
+                    StartCancelledExport();
+                    return;
+                }
+            }
+            else
+            {
+                _emptySince = -1;
+                _lastComposer = "";
+                _stableSince = Now();
+            }
+
+            if (Now() >= _cancelDeadline)
+            {
+                RaiseDiscardedOnce();
+                RecycleChild("Recycled Claude after a cancelled take did not settle");
+                return;
+            }
+            ArmPoll(generation);
+        }
+
+        private void StartCancelledExport()
+        {
+            StopHold();
+            _phase = TakePhase.ExportWait;
+            _exportPurpose = ExportPurpose.Discard;
+            _generation++;
+            int generation = _generation;
+            bool deleteFailed;
+            if (!StartExportRequest(out deleteFailed))
+            {
+                if (deleteFailed)
+                {
+                    FailExportAndRecycle();
+                    return;
+                }
+                CompleteDiscard();
+                return;
+            }
+            ArmPoll(generation);
         }
 
         private void FailTake(string message, bool attemptDiscard)
@@ -854,16 +1052,25 @@ namespace Murmur.App.Engine
             }
         }
 
-        private void HandleEngineError()
+        private void HandleEngineError(Exception error)
         {
             StopAllTimers();
+            bool active = _phase != TakePhase.None || _pendingTake || _beginAfterDiscard || _takeRequested;
             _phase = TakePhase.None;
             _pendingTake = false;
+            _beginAfterDiscard = false;
             _generation++;
+            RaiseDiagnostic(error.GetType().Name);
+            if (active)
+            {
+                RaiseFailed("Murmur engine error");
+            }
+            else
+            {
+                _takeRequested = false;
+            }
             CleanupResources();
-            RaiseFailed("Murmur engine error");
             SetState(EngineState.Faulted);
-            _exitRequested = true;
         }
 
         private ScreenReading ReadScreen()
@@ -887,14 +1094,9 @@ namespace Murmur.App.Engine
             {
                 return false;
             }
-            try
-            {
-                return terminal.TryWrite(" ");
-            }
-            catch (Exception)
-            {
-                return false;
-            }
+            // A throwing host is an engine failure, not a quiet false result:
+            // let it reach the message-handler guard in Run().
+            return terminal.TryWrite(" ");
         }
 
         private bool TryReadExport(string path, out string text)
@@ -965,7 +1167,32 @@ namespace Murmur.App.Engine
             return false;
         }
 
-        private static void DeleteExport(string path)
+        private bool IsFreshHandoff(string path)
+        {
+            if (_exportRequestUtc == DateTime.MinValue)
+            {
+                return false;
+            }
+            try
+            {
+                DateTime written = File.GetLastWriteTimeUtc(path);
+                return written >= _exportRequestUtc.AddSeconds(-ExportFreshnessSlackSeconds);
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return false;
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+        }
+
+        private static bool DeleteExport(string path)
         {
             try
             {
@@ -973,12 +1200,15 @@ namespace Murmur.App.Engine
                 {
                     File.Delete(path);
                 }
+                return true;
             }
             catch (IOException)
             {
+                return false;
             }
             catch (UnauthorizedAccessException)
             {
+                return false;
             }
         }
 
@@ -1120,6 +1350,7 @@ namespace Murmur.App.Engine
 
         private void RaiseTranscript(string text)
         {
+            _takeRequested = _pendingTake;
             Action<string> handler = TranscriptReady;
             if (handler == null)
             {
@@ -1136,6 +1367,7 @@ namespace Murmur.App.Engine
 
         private void RaiseFailed(string message)
         {
+            _takeRequested = _pendingTake;
             Action<string> handler = Failed;
             if (handler == null)
             {
@@ -1144,6 +1376,28 @@ namespace Murmur.App.Engine
             try
             {
                 handler(message);
+            }
+            catch (Exception)
+            {
+            }
+        }
+
+        private void RaiseDiscardedOnce()
+        {
+            if (!_takeRequested)
+            {
+                return;
+            }
+            // A queued next take is its own request and stays outstanding.
+            _takeRequested = _pendingTake;
+            Action handler = Discarded;
+            if (handler == null)
+            {
+                return;
+            }
+            try
+            {
+                handler();
             }
             catch (Exception)
             {
@@ -1172,6 +1426,7 @@ namespace Murmur.App.Engine
             Listening,
             Recording,
             FinalWait,
+            CancelQuiet,
             ExportWait,
             ClearWait,
             Discard
