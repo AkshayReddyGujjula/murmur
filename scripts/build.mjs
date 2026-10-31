@@ -9,8 +9,8 @@ if (!existsSync(compiler)) throw new Error('Windows .NET Framework x64 compiler 
 const command = process.argv[2] || 'build';
 if (!['build', 'test'].includes(command)) throw new Error('Usage: node scripts/build.mjs [build|test]');
 
-function run(exe, args) {
-  const result = spawnSync(exe, args, { cwd: root, stdio: 'inherit', windowsHide: true, shell: false });
+function run(exe, args, environment = process.env) {
+  const result = spawnSync(exe, args, { cwd: root, stdio: 'inherit', windowsHide: true, shell: false, env: environment });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status || 1);
 }
@@ -21,12 +21,16 @@ function sources(folder) {
 function compile(destination, files, extra = []) {
   mkdirSync(dirname(destination), { recursive: true });
   for (const file of files) if (!existsSync(join(root, file))) throw new Error(`Missing source: ${file}`);
-  run(compiler, ['/nologo', '/target:exe', '/platform:x64', '/codepage:65001', '/warnaserror+', '/optimize+', `/out:${destination}`, ...extra, ...files]);
+  run(compiler, ['/nologo', '/target:exe', '/platform:x64', '/codepage:65001', '/warnaserror+', '/optimize+', `/out:${destination}`, ...extra, ...files.map(file => join(root, file))]);
 }
 if (command === 'test') {
+  const temporary = join(root, '.test-output', 'tmp');
+  mkdirSync(temporary, { recursive: true });
+  const testEnvironment = { ...process.env, TEMP: temporary, TMP: temporary };
   const groups = [
     ['control', ['src/Probe/ProbeControl.cs', 'tests/ControlTests.cs']],
     ['options', ['src/Probe/ProbeOptions.cs', 'tests/OptionsTests.cs']],
+    ['inbox', ['src/Probe/ProbeInbox.cs', 'src/Probe/ProbeControl.cs', 'tests/InboxTests.cs']],
     ['transport', ['src/Transport/OwnedTerminal.cs', 'tests/TransportTests.cs']],
     ['handoff', ['src/Handoff/PromptHandoff.cs', 'tests/HandoffTests.cs']],
     ['screen', ['src/Probe/TerminalScreen.cs', 'tests/TerminalScreenTests.cs']],
@@ -34,11 +38,11 @@ if (command === 'test') {
   for (const [name, files] of groups) {
     const destination = join(root, '.test-output', `${name}.exe`);
     compile(destination, files);
-    run(destination, []);
+    run(destination, [], testEnvironment);
   }
   const inert = join(root, '.test-output', 'inert.exe');
   compile(inert, [...sources('src'), 'tests/InertTests.cs'], ['/main:Murmur.Tests.InertTests']);
-  run(inert, []);
+  run(inert, [], testEnvironment);
   console.log('Offline component checks passed. No real provider or microphone was tested.');
 } else {
   const destination = join(root, 'build', 'Murmur.Probe.exe');

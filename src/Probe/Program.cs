@@ -1,23 +1,16 @@
 using System;
-using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Threading;
 using Murmur.Handoff;
 using Murmur.Transport;
+using Message = Murmur.Probe.ProbeMessage;
 
 namespace Murmur.Probe
 {
     internal static class Program
     {
-        private sealed class Message
-        {
-            public ConsoleKey Key;
-            public string Kind, Detail;
-            public Message(string kind) { Kind = kind; }
-        }
-
         public static int Main(string[] args)
         {
             try
@@ -25,9 +18,13 @@ namespace Murmur.Probe
                 ProbeOptions options = ProbeOptions.Parse(args);
                 if (options.Mode == ProbeMode.Help) { Help(); return 0; }
                 if (options.Mode == ProbeMode.Export)
-                    return PromptHandoff.Export(options.PromptPath,
+                {
+                    int code = PromptHandoff.Export(options.PromptPath,
                         Environment.GetEnvironmentVariable("MURMUR_SESSION_DIRECTORY"),
                         Environment.GetEnvironmentVariable("MURMUR_HANDOFF_PATH"));
+                    if (code != 0) Console.Error.WriteLine("Murmur handoff rejected (code " + code + ").");
+                    return code;
+                }
                 string executable = options.ClaudePath ?? Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "bin", "claude.exe");
                 if (executable.Length < 3 || !Char.IsLetter(executable[0]) || executable[1] != ':' ||
@@ -41,7 +38,8 @@ namespace Murmur.Probe
                     try
                     {
                         IsolatedProfile profile = new IsolatedProfile();
-                        return options.Mode == ProbeMode.Login ? Login(executable, profile) : Probe(executable, profile);
+                        try { return options.Mode == ProbeMode.Login ? Login(executable, profile) : Probe(executable, profile); }
+                        finally { profile.CleanupKnownFiles(); }
                     }
                     finally { instance.ReleaseMutex(); }
                 }
@@ -65,7 +63,7 @@ namespace Murmur.Probe
         private static int Login(string executable, IsolatedProfile profile)
         {
             Console.WriteLine("Sign in to the separate Murmur profile: " + profile.ProfileDirectory);
-            Console.WriteLine("This can open a browser. Your existing Claude configuration is not used.");
+            Console.WriteLine("This can open a browser. Murmur supplies a separate config directory; CLI-wide state isolation still needs verification.");
             ProcessStartInfo info = new ProcessStartInfo(executable, "auth login");
             info.UseShellExecute = false;
             info.WorkingDirectory = profile.Workspace;
@@ -83,15 +81,17 @@ namespace Murmur.Probe
             Console.WriteLine("When ready, R: record; S: release to finalize; V: inspect; E: export/display the final unsent buffer.");
             Console.WriteLine("C: cancel; Q: quit. No global shortcut or clipboard is used by this harness.");
             Console.WriteLine("Verify actual listening and finalized text in the diagnostic screen; a keypress is not proof.");
-            using (BlockingCollection<Message> inbox = new BlockingCollection<Message>(128))
+            using (ProbeInbox inbox = new ProbeInbox())
             using (OwnedTerminal terminal = new OwnedTerminal())
             using (FileSystemWatcher watcher = new FileSystemWatcher(profile.SessionDirectory))
             using (Timer hold = new Timer(delegate { Post(inbox, new Message("tick")); }, null, Timeout.Infinite, Timeout.Infinite))
             using (Timer timeout = new Timer(delegate { Post(inbox, new Message("timeout")); }, null, Timeout.Infinite, Timeout.Infinite))
             {
-                TerminalScreen screen = new TerminalScreen(120, 40);
+                TerminalScreen screen = new TerminalScreen(OwnedTerminal.TerminalColumns, OwnedTerminal.TerminalRows);
                 ProbeControl control = new ProbeControl();
-                terminal.Output += delegate(string chunk) { screen.Feed(chunk, delegate(string reply) { terminal.TryWrite(reply); }); };
+                terminal.Output += delegate(string chunk) { screen.Feed(chunk, delegate(string reply) {
+                    if (!terminal.TryWrite(reply)) Post(inbox, new Message("reply-dropped"));
+                }); };
                 terminal.Closed += delegate(string reason) { Post(inbox, new Message("closed") { Detail = reason }); };
                 watcher.Filter = Path.GetFileName(profile.ExportPath);
                 watcher.Created += delegate { Post(inbox, new Message("handoff")); };
@@ -122,9 +122,12 @@ namespace Murmur.Probe
                         else if (message.Kind == "key")
                         {
                             ProbeAction action = control.Key(message.Key);
-                            if (action == ProbeAction.Inspect) Console.WriteLine("\n--- Owned child screen ---\n" + screen.Snapshot() + "\n--- End screen ---");
+                            if (action == ProbeAction.Inspect) Console.WriteLine("\n--- Owned child screen ---\n" + SafeDisplay(screen.Snapshot()) + "\n--- End screen ---");
                             else if (action == ProbeAction.SetupInput)
-                                terminal.TryWrite(message.Key == ConsoleKey.Enter ? "\r" : message.Key == ConsoleKey.UpArrow ? "\x1b[A" : "\x1b[B");
+                            {
+                                if (!terminal.TryWrite(message.Key == ConsoleKey.Enter ? "\r" : message.Key == ConsoleKey.UpArrow ? "\x1b[A" : "\x1b[B"))
+                                    throw new IOException("Owned terminal input is unavailable during setup.");
+                            }
                             else if (action == ProbeAction.StartHold) hold.Change(0, 50);
                             else if (action == ProbeAction.StopHold) { hold.Change(Timeout.Infinite, Timeout.Infinite); Console.WriteLine("\nReleased hold. Inspect finalization with V before E."); }
                             else if (action == ProbeAction.Export)
@@ -141,7 +144,7 @@ namespace Murmur.Probe
                                 return 2;
                             }
                         }
-                        else if (message.Kind == "handoff" && control.Phase == ProbePhase.Exporting && File.Exists(profile.ExportPath))
+                        else if ((message.Kind == "handoff" || message.Kind == "timeout") && control.Phase == ProbePhase.Exporting && File.Exists(profile.ExportPath))
                         {
                             string text = ReadHandoff(profile.ExportPath);
                             if (String.IsNullOrWhiteSpace(text)) throw new IOException("Editor buffer was empty; this does not establish successful dictation.");
@@ -153,7 +156,7 @@ namespace Murmur.Probe
                         }
                         else if (message.Kind == "timeout" && control.Phase == ProbePhase.Exporting)
                             throw new TimeoutException("No prompt export arrived within 15 seconds. No transcript was accepted.");
-                        else if (message.Kind == "closed" || message.Kind == "watch-error" || message.Kind == "input-ended")
+                        else if (message.Kind == "closed" || message.Kind == "watch-error" || message.Kind == "input-ended" || message.Kind == "reply-dropped" || message.Kind == "overflow")
                             throw new IOException("Probe stopped: " + (message.Detail ?? message.Kind));
                     }
                 }
@@ -185,14 +188,19 @@ namespace Murmur.Probe
             }
         }
 
-        private static string SafeDisplay(string text)
+        internal static string SafeDisplay(string text)
         {
             StringBuilder display = new StringBuilder(text.Length);
-            foreach (char c in text) display.Append(Char.IsControl(c) && c != '\r' && c != '\n' && c != '\t' ? '\u2423' : c);
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+                if (c == '\r') { if (i + 1 < text.Length && text[i + 1] == '\n') continue; display.Append('\u240d'); }
+                else if (Char.GetUnicodeCategory(c) == System.Globalization.UnicodeCategory.Format) display.Append('\u2423');
+                else display.Append(Char.IsControl(c) && c != '\n' && c != '\t' ? '\u2423' : c);
+            }
             return display.ToString();
         }
 
-        private static void Post(BlockingCollection<Message> inbox, Message message)
-        { try { inbox.TryAdd(message); } catch (InvalidOperationException) { } }
+        private static void Post(ProbeInbox inbox, Message message) { inbox.Post(message); }
     }
 }

@@ -9,14 +9,14 @@ namespace Murmur.Tests
     {
         public static int Main()
         {
-            string appData = Environment.GetEnvironmentVariable("LOCALAPPDATA");
             string root = Path.Combine(Path.GetTempPath(), "murmur-inert-" + Guid.NewGuid().ToString("N"));
+            int resolvedRoots = 0;
             TextWriter output = Console.Out, errors = Console.Error;
             try
             {
                 // These entry-point paths must return before any profile, native
                 // transport, mutex, microphone or provider is initialized.
-                Environment.SetEnvironmentVariable("LOCALAPPDATA", root);
+                IsolatedProfile.RootOverride = delegate { resolvedRoots++; return root; };
                 using (StringWriter sink = new StringWriter())
                 {
                     Console.SetOut(sink); Console.SetError(sink);
@@ -24,7 +24,19 @@ namespace Murmur.Tests
                     if (Program.Main(new string[] { "--help" }) != 0) throw new Exception("Explicit help failed.");
                     if (Program.Main(new string[] { "--unknown" }) == 0) throw new Exception("Invalid mode accepted.");
                 }
-                if (Directory.Exists(root)) throw new Exception("An inert command created a data directory.");
+                if (resolvedRoots != 0 || Directory.Exists(root)) throw new Exception("An inert command attempted profile initialization.");
+                // Positive control: prove the seam redirects the real constructor,
+                // rather than checking a path the production code never uses.
+                IsolatedProfile fixture = new IsolatedProfile();
+                if (resolvedRoots != 1 || !fixture.ProfileDirectory.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                    throw new Exception("Profile test seam did not redirect the constructor.");
+                fixture.CleanupKnownFiles();
+                Directory.Delete(fixture.ProfileDirectory, false);
+                Directory.Delete(Path.GetDirectoryName(fixture.SessionDirectory), false);
+                File.Delete(Path.Combine(root, ".murmur-owned-root")); Directory.Delete(root, false);
+                if (Program.SafeDisplay("good morning\rjunk") != "good morning\u240djunk") throw new Exception("Bare CR can rewrite diagnostic text.");
+                if (Program.SafeDisplay("a\r\nb") != "a\nb") throw new Exception("CRLF display changed incorrectly.");
+                if (Program.SafeDisplay("x\u202ey\x1b") != "x\u2423y\u2423") throw new Exception("Diagnostic format controls escaped filtering.");
                 Console.SetOut(output); Console.SetError(errors);
                 Console.WriteLine("PASS: real entry-point default/help/error paths create no profile or provider.");
                 return 0;
@@ -32,7 +44,7 @@ namespace Murmur.Tests
             catch (Exception error) { Console.SetError(errors); Console.Error.WriteLine(error.Message); return 1; }
             finally
             {
-                Environment.SetEnvironmentVariable("LOCALAPPDATA", appData);
+                IsolatedProfile.RootOverride = null;
                 Console.SetOut(output); Console.SetError(errors);
             }
         }

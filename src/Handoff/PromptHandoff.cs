@@ -16,7 +16,7 @@ namespace Murmur.Handoff
     //   15        source and destination are identical
     //   16        reparse point in the accepted chain (fail closed, incl. missing)
     //   17        destination already exists / publish conflict
-    //   18        source missing or unreadable
+    //   18        source open or read failed (missing chain nodes use 16)
     //   19        input larger than 1 MiB (hard allocation cap)
     //   20        input is not strict UTF-8
     //   21        staging write or publish failure

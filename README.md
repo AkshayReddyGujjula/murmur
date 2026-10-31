@@ -25,6 +25,19 @@ not part of the eventual running app.
 
 See [PLAN.md](PLAN.md) for the approved stages and acceptance gates.
 
+```powershell
+node scripts/build.mjs test
+node scripts/build.mjs build
+```
+
+The build produces `build\Murmur.Probe.exe` and does not launch it. The seven
+offline test groups pass, with one explicitly skipped reparse-point case. These
+checks do not establish native terminal startup or successful speech recognition.
+The test runner keeps temporary fixtures under the ignored `.test-output/` folder.
+
+The isolated live-test procedure is in [docs/LIVE-CHECK.md](docs/LIVE-CHECK.md).
+It requires separate approval before running `--login` or `--probe`.
+
 ## Local recovery
 
 The legacy implementation and earlier experiments are preserved only in Git on

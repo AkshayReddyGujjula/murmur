@@ -12,27 +12,38 @@ namespace Murmur.Probe
     // is inspected, copied, linked, reconfigured or used for authentication.
     internal sealed class IsolatedProfile
     {
+        private const string OwnerMarker = "Murmur feasibility profile v1";
+        internal static Func<string> RootOverride { get; set; }
         public readonly string ProfileDirectory, SessionDirectory, Workspace, ExportPath;
         public readonly Dictionary<string, string> EnvironmentOverrides;
         public readonly string[] Arguments;
 
         public IsolatedProfile()
         {
-            string root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Murmur", "feasibility-v1");
+            string root = RootOverride == null ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Murmur", "feasibility-v1") : RootOverride();
+            root = Path.GetFullPath(root);
+            RejectLinks(root);
             string marker = Path.Combine(root, ".murmur-owned-root");
             if (Directory.Exists(root) && !File.Exists(marker)) throw new IOException("Existing data directory has no Murmur ownership marker; refusing to use it.");
-            if (Directory.Exists(root) && (File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0)
-                throw new IOException("The Murmur data directory must not be a link.");
+            if (File.Exists(marker))
+            {
+                RejectLinks(marker);
+                if (new FileInfo(marker).Length > 128) throw new IOException("Invalid Murmur ownership marker.");
+                using (StreamReader reader = new StreamReader(marker))
+                    if (reader.ReadLine() != OwnerMarker) throw new IOException("Invalid Murmur ownership marker.");
+            }
             Directory.CreateDirectory(root);
-            if (!File.Exists(marker)) File.WriteAllText(marker, "Murmur feasibility profile v1\n", new UTF8Encoding(false));
+            if (!File.Exists(marker))
+                using (FileStream file = new FileStream(marker, FileMode.CreateNew, FileAccess.Write))
+                {
+                    byte[] bytes = new UTF8Encoding(false).GetBytes(OwnerMarker + "\n"); file.Write(bytes, 0, bytes.Length);
+                }
             ProfileDirectory = Path.Combine(root, "profile");
             SessionDirectory = Path.Combine(root, "sessions", Guid.NewGuid().ToString("N"));
             Workspace = Path.Combine(SessionDirectory, "workspace");
             ExportPath = Path.Combine(SessionDirectory, "handoff.txt");
-            Directory.CreateDirectory(ProfileDirectory);
-            Directory.CreateDirectory(Workspace);
-            if ((File.GetAttributes(ProfileDirectory) & FileAttributes.ReparsePoint) != 0)
-                throw new IOException("The isolated profile must not be a link.");
+            RejectLinks(ProfileDirectory); RejectLinks(Workspace);
+            Directory.CreateDirectory(ProfileDirectory); Directory.CreateDirectory(Workspace);
             string settings = Path.Combine(SessionDirectory, "settings.json");
             string mcp = Path.Combine(SessionDirectory, "mcp.json");
             File.WriteAllText(settings, "{\"voice\":{\"enabled\":true,\"mode\":\"hold\",\"autoSubmit\":false},\"language\":\"en\",\"editorMode\":\"normal\"}", new UTF8Encoding(false));
@@ -40,6 +51,32 @@ namespace Murmur.Probe
             Arguments = new string[] { "--safe-mode", "--setting-sources", "", "--settings", settings,
                 "--strict-mcp-config", "--mcp-config", mcp, "--tools", "", "--session-id", Guid.NewGuid().ToString() };
             EnvironmentOverrides = EnvironmentForChild(ProfileDirectory, SessionDirectory, ExportPath);
+        }
+
+        private static void RejectLinks(string path)
+        {
+            for (string current = Path.GetFullPath(path); current != null; current = Path.GetDirectoryName(current))
+                if ((File.Exists(current) || Directory.Exists(current)) && (File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                    throw new IOException("A Murmur data path contains a link; refusing to use it.");
+        }
+
+        public void CleanupKnownFiles()
+        {
+            // Called after disposing the owned terminal/login child. Preserve auth;
+            // delete only exact files owned by this session, never prune whole trees.
+            try
+            {
+                RejectLinks(SessionDirectory);
+                foreach (string name in new string[] { "handoff.txt", "settings.json", "mcp.json" })
+                {
+                    string path = Path.Combine(SessionDirectory, name); RejectLinks(path);
+                    if (File.Exists(path)) File.Delete(path);
+                }
+                if (Directory.Exists(Workspace)) Directory.Delete(Workspace, false);
+                if (Directory.Exists(SessionDirectory)) Directory.Delete(SessionDirectory, false);
+            }
+            catch (IOException) { Console.Error.WriteLine("Session temp files remain at " + SessionDirectory); }
+            catch (UnauthorizedAccessException) { Console.Error.WriteLine("Session temp cleanup was denied at " + SessionDirectory); }
         }
 
         private static Dictionary<string, string> EnvironmentForChild(string profile, string session, string export)
