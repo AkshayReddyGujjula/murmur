@@ -30,7 +30,7 @@ namespace Murmur.Probe
                 if (executable.Length < 3 || !Char.IsLetter(executable[0]) || executable[1] != ':' ||
                     (executable[2] != '\\' && executable[2] != '/') || !File.Exists(executable))
                     throw new ArgumentException("An existing absolute local path to claude.exe is required.");
-                using (Mutex instance = new Mutex(false, "Local\\Murmur.Feasibility.v1"))
+                using (Mutex instance = new Mutex(false, "Global\\Murmur.Feasibility.v1." + UserKey()))
                 {
                     bool acquired;
                     try { acquired = instance.WaitOne(0); } catch (AbandonedMutexException) { acquired = true; }
@@ -49,6 +49,18 @@ namespace Murmur.Probe
                 Console.Error.WriteLine("Murmur probe: " + error.Message);
                 return 1;
             }
+        }
+
+        // Must match the tray app (src/App/Program.cs UserKey) so the two never share the profile.
+        private static string UserKey()
+        {
+            try
+            {
+                using (System.Security.Principal.WindowsIdentity identity = System.Security.Principal.WindowsIdentity.GetCurrent())
+                    if (identity.User != null) return identity.User.Value;
+            }
+            catch (System.Security.SecurityException) { }
+            return Environment.UserName;
         }
 
         private static void Help()
