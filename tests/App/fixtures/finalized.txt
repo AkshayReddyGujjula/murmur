@@ -1,0 +1,42 @@
+
+ ▐▛███▛█   Claude Code v2.1.316
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   ~\Desktop\GitHub\STT App\build\data\feasibility-v1\sessions\ef899b539f034849ab12d4652746be38\workspace
+
+⚠ Safe mode: all customizations are disabled (CLAUDE.md, skills, plugins, hooks, MCP, agents, and more)
+  Restart without --safe-mode to re-enable
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+❯ This is the beginning of the murmur dictation text. Today I'm testing a small speech-to-text application for
+  Windows. I want this tool to make writing easier without interrupting whatever I am already doing. The basic
+  workflow is simple. Press a shortcut, speak naturally, press the shortcut again, and paste the resulting text into
+  another application. I might use dictation while writing an email, explaining a programming problem, or planning my
+  work for the afternoon. Sometimes I speak quickly and sometimes I pause to think. The application should handle
+  those pauses without losing the beginning or ending of a sentence. Here are a few technical terms: OAuth, JSON,
+  Python, PowerShell, GitHub, and localhost, port 3000. A useful transcription tool should preserve names, numbers,
+  while adding sensible punctuation. For example, I have three tasks today: review the code, investigate a bug, and
+  write down the results. I also care about reliability. If a recording fails, I want a clear explanation. If
+  transcription succeeds, I want the complete text available without having to repeat myself. The interface should
+  stay small, and my keyboard focus should remain in the application where I was working. I am now approaching the end
+  of this recording. The opening sentence and the closing sentence should both appear in the final transcript. This
+  is the final sentence of the murmur dictation test.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  ⏵⏵ auto mode on (shift+tab to cycle)
