@@ -1,49 +1,65 @@
 # Murmur
 
-A lightweight Windows dictation companion, rebuilt from an empty working tree.
+A tiny Windows tray dictation app. **Ctrl+Space, speak, Ctrl+Space, paste.**
 
-The intended workflow is Ctrl+Space, speak, Ctrl+Space, paste. During recording,
-only a small waveform should appear. Transcription must use the dictation already
-included in Claude or Codex; no separately billed speech API or local ASR model.
+Speech-to-text is done by the voice dictation already included in Claude Code. Murmur
+runs its own hidden Claude Code CLI child, with a separate profile, in hold-to-talk mode.
+It never submits your words as a prompt and never touches your other Claude sessions.
+No speech API keys and no local speech model.
 
-## Current stage
+## Run it
 
-Building an opt-in feasibility harness for a **dedicated Claude Code CLI child**.
-This is not yet the finished tray app. No app, provider, microphone or clipboard
-test had been run at the initial code checkpoint. The user separately approved
-isolated login/probe and microphone checks on 2026-10-31. The existing Claude
-session and clipboard remain off limits.
+```powershell
+node scripts/build.mjs build     # builds build\Murmur.exe (does not launch it)
+.\build\Murmur.exe               # lives in the tray (^ hidden icons area)
+```
 
-The harness must use its own Claude configuration profile, not attach to the
-user's existing Claude process, window, terminal, session, or configuration.
-It must never submit dictated text as an agent prompt.
+Murmur keeps its data beside the exe in `build\data\`:
+- `feasibility-v1\profile`: Murmur's own Claude sign-in. It is separate from your normal Claude.
+- `app\settings.ini`, `app\history.dat` (DPAPI-encrypted for your Windows user), `app\murmur.log`.
+  Transcript text is never written to the log.
+
+## Using it
+
+| Action | What happens |
+| --- | --- |
+| **Ctrl+Space** | Small black pill appears at the bottom of the screen. Dots mean Claude is getting ready; the live waveform means it is listening, so speak. |
+| **Ctrl+Space** again | Pill shimmers while Claude finalizes, then shows **Copied**. Paste anywhere with Ctrl+V. |
+| **Esc** while recording | Cancels and discards the take. |
+| Click the tray icon | Menu: status, **Recent** (click any entry to copy it again), shortcut, engine mode, options, account, logs, quit. |
+
+Focus never moves: the pill is click-through and never activates, so the window you were
+typing in keeps the keyboard.
+
+### Menu options
+
+- **Shortcut**: Ctrl+Space, Ctrl+Shift+Space, Ctrl+Alt+Space or Alt+Shift+Space.
+- **Claude engine**:
+  - *Always ready* (default): instant start. The Claude CLI child stays resident and uses about 200 MB of RAM.
+  - *Sleep after 15 min idle*.
+  - *Start on demand*: least memory, but each take waits a few seconds for Claude to start.
+- **Options**: overlay at bottom or top, sounds, Esc cancels, paste automatically after copy
+  (off by default), keep recent history, start with Windows.
+- **Account**: sign in to Claude, or run Claude's one-time setup in a console window.
+- **Open logs folder**.
 
 ## Development
 
-Windows x64, the Windows .NET Framework C# compiler, and Node.js for build/test
-orchestration. No package installation or runtime download is required. Node is
-not part of the eventual running app.
-
-See [PLAN.md](PLAN.md) for the approved stages and acceptance gates.
+Windows x64 with the in-box .NET Framework C# compiler, and Node.js only for build/test
+orchestration. Nothing is installed or downloaded.
 
 ```powershell
-node scripts/build.mjs test
-node scripts/build.mjs build
+node scripts/build.mjs test                 # all offline checks
+node scripts/build.mjs test-group Engine    # one module: Engine | Core | Audio | Ui
 ```
 
-The build produces `build\Murmur.Probe.exe` and does not launch it. The seven
-offline test groups pass, with one explicitly skipped reparse-point case. These
-checks do not establish native terminal startup or successful speech recognition.
-The test runner keeps temporary fixtures under the ignored `.test-output/` folder.
-
-The isolated live-test procedure is in [docs/LIVE-CHECK.md](docs/LIVE-CHECK.md).
-That isolated login/probe scope is now approved. Its portable profile lives in
-the ignored `build\data\feasibility-v1` folder; it does not reuse the user's
-existing Claude profile.
+Layout: `src/App/Engine` (drives the owned Claude child: screen parsing, hold, export),
+`src/App/Audio` (waveIn level meter for the waveform only), `src/App/Ui` (layered overlay,
+tray menu, logo), `src/App/Core` (settings, history, log, hotkeys, clipboard, chimes),
+`src/App/Program.cs` (wiring). The backend in `src/Transport`, `src/Handoff` and
+`src/Probe` is the feasibility harness that was proven live (see `docs/LIVE-RESULTS.md`).
+Module contracts: `docs/APP-CONTRACTS.md`. Acceptance checklist: `docs/APP-CHECKS.md`.
 
 ## Local recovery
 
-The legacy implementation and earlier experiments are preserved only in Git on
-`archive/pre-rebuild-20261031`, commit `47ffa84`. The empty-tree rebuild checkpoint
-is `98da563`. No source from that implementation is being copied into this rebuild.
-
+The legacy implementation is preserved on `archive/pre-rebuild-20261031`, commit `47ffa84`.
