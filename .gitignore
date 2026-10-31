@@ -18,6 +18,7 @@ node_modules/
 .npm-cache/
 out/
 *.tsbuildinfo
+next/out/
 
 # Local logs and OS noise
 *.log
