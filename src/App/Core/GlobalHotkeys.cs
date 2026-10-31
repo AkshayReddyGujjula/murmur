@@ -10,8 +10,10 @@ namespace Murmur.App.Core
         public event Action CancelPressed;
 
         private const int HotId = 1;
+        private const int HotIdAlt = 3;
         private const int CancelId = 2;
 
+        private int activeHotId;
         private bool cancelActive;
         private bool disposed;
 
@@ -31,23 +33,40 @@ namespace Murmur.App.Core
             uint key;
             Describe(choice, out modifiers, out key);
             EnsureHandle();
-            try
+            int newId;
+            if (activeHotId == HotId)
             {
-                UnregisterHotKey(Handle, HotId);
+                newId = HotIdAlt;
             }
-            catch
+            else
             {
+                newId = HotId;
             }
             bool ok = false;
             try
             {
-                ok = RegisterHotKey(Handle, HotId, modifiers | 0x4000, key);
+                ok = RegisterHotKey(Handle, newId, modifiers | 0x4000, key);
             }
             catch
             {
                 ok = false;
             }
-            return ok;
+            if (!ok)
+            {
+                return false;
+            }
+            if (activeHotId != 0 && activeHotId != newId)
+            {
+                try
+                {
+                    UnregisterHotKey(Handle, activeHotId);
+                }
+                catch
+                {
+                }
+            }
+            activeHotId = newId;
+            return true;
         }
 
         public void SetCancelActive(bool active)
@@ -146,7 +165,7 @@ namespace Murmur.App.Core
             if (m.Msg == 0x0312)
             {
                 int id = m.WParam.ToInt32();
-                if (id == HotId)
+                if (id == HotId || id == HotIdAlt)
                 {
                     Action handler = Pressed;
                     if (handler != null)
@@ -178,6 +197,13 @@ namespace Murmur.App.Core
                         try
                         {
                             UnregisterHotKey(Handle, HotId);
+                        }
+                        catch
+                        {
+                        }
+                        try
+                        {
+                            UnregisterHotKey(Handle, HotIdAlt);
                         }
                         catch
                         {

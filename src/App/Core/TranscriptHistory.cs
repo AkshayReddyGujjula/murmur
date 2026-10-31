@@ -126,6 +126,24 @@ namespace Murmur.App.Core
             }
         }
 
+        public static void DeleteFile(string path)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(path))
+                {
+                    return;
+                }
+                if (File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch
+            {
+            }
+        }
+
         private void LoadLocked()
         {
             entries.Clear();

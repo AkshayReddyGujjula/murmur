@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Text;
+using System.Windows.Forms;
 using Murmur.App.Core;
 
 namespace Murmur.Tests.App
@@ -15,6 +16,9 @@ namespace Murmur.Tests.App
             }
         }
 
+        private static int pressedCount;
+        private static int cancelCount;
+
         public static int Main()
         {
             try
@@ -28,6 +32,10 @@ namespace Murmur.Tests.App
                 TestCommandFor();
                 TestBuildWav();
                 Console.WriteLine("PASS: core settings, history, log, hotkey describe, autostart command, chimes.");
+                TestInputSize();
+                TestDeleteFile(baseDir);
+                TestHotkeyBothIds();
+                Console.WriteLine("PASS: core autopaste input size, history deletefile, hotkey dual ids.");
                 return 0;
             }
             catch (Exception error)
@@ -242,6 +250,118 @@ namespace Murmur.Tests.App
             Check(wavLong.Length > wav.Length, "wav longer duration longer");
             byte[] wavStop = Chimes.BuildWav(660, 70, 0.25);
             Check(wavStop.Length == wav.Length, "wav same duration same length");
+        }
+
+        private static void TestInputSize()
+        {
+            if (IntPtr.Size == 8)
+            {
+                Check(AutoPaste.InputSize == 40, "autopaste input size 40 on x64");
+            }
+            else
+            {
+                Check(AutoPaste.InputSize >= 28, "autopaste input size sane on x86");
+            }
+            System.Reflection.MethodInfo trySend = typeof(AutoPaste).GetMethod("TrySendCtrlV");
+            Check(trySend != null, "autopaste trysend exists");
+            Check(trySend.ReturnType == typeof(bool), "autopaste trysend returns bool");
+            System.Reflection.ParameterInfo[] pars = trySend.GetParameters();
+            Check(pars.Length == 1, "autopaste trysend one param");
+            System.Reflection.MethodInfo send = typeof(AutoPaste).GetMethod("SendCtrlV");
+            Check(send != null, "autopaste sendctrlv kept");
+            Check(send.ReturnType == typeof(void), "autopaste sendctrlv void");
+        }
+
+        private static void TestDeleteFile(string baseDir)
+        {
+            string path = Path.Combine(baseDir, "todelete.dat");
+            File.WriteAllText(path, "junk", new UTF8Encoding(false));
+            Check(File.Exists(path), "deletefile setup exists");
+            TranscriptHistory.DeleteFile(path);
+            Check(!File.Exists(path), "deletefile deletes");
+            bool threw = false;
+            try
+            {
+                TranscriptHistory.DeleteFile(path);
+            }
+            catch
+            {
+                threw = true;
+            }
+            Check(!threw, "deletefile missing no throw");
+            threw = false;
+            try
+            {
+                TranscriptHistory.DeleteFile(null);
+                TranscriptHistory.DeleteFile("");
+            }
+            catch
+            {
+                threw = true;
+            }
+            Check(!threw, "deletefile null empty no throw");
+            string nested = Path.Combine(baseDir, "nested-delete.dat");
+            File.WriteAllText(nested, "data", new UTF8Encoding(false));
+            TranscriptHistory.DeleteFile(nested);
+            Check(!File.Exists(nested), "deletefile nested deletes");
+            TranscriptHistory history = new TranscriptHistory(nested, 5);
+            history.Add("still works after deletefile");
+            Check(history.Items.Count == 1, "deletefile history usable");
+            Check(history.Items[0].Text == "still works after deletefile", "deletefile history text");
+        }
+
+        private static void TestHotkeyBothIds()
+        {
+            GlobalHotkeys hotkeys = new GlobalHotkeys();
+            try
+            {
+                pressedCount = 0;
+                cancelCount = 0;
+                hotkeys.Pressed += OnTestPressed;
+                hotkeys.CancelPressed += OnTestCancel;
+                SendHotkey(hotkeys, 1);
+                Check(pressedCount == 1, "hotkey id 1 raises pressed");
+                SendHotkey(hotkeys, 3);
+                Check(pressedCount == 2, "hotkey id 3 raises pressed");
+                Check(cancelCount == 0, "hotkey main ids do not raise cancel");
+                SendHotkey(hotkeys, 2);
+                Check(cancelCount == 1, "hotkey cancel id raises cancel");
+                Check(pressedCount == 2, "hotkey cancel does not raise pressed");
+            }
+            finally
+            {
+                hotkeys.Dispose();
+            }
+        }
+
+        private static void OnTestPressed()
+        {
+            pressedCount++;
+        }
+
+        private static void OnTestCancel()
+        {
+            cancelCount++;
+        }
+
+        private static void SendHotkey(GlobalHotkeys hotkeys, int id)
+        {
+            System.Reflection.MethodInfo method = typeof(GlobalHotkeys).GetMethod("WndProc", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            Check(method != null, "hotkey wndproc exists");
+            Message m = new Message();
+            m.Msg = 0x0312;
+            m.WParam = new IntPtr(id);
+            m.LParam = IntPtr.Zero;
+            m.HWnd = IntPtr.Zero;
+            object[] args = new object[1];
+            args[0] = m;
+            try
+            {
+                method.Invoke(hotkeys, args);
+            }
+            catch (System.Reflection.TargetInvocationException)
+            {
+            }
         }
     }
 }

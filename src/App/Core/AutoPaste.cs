@@ -11,6 +11,17 @@ namespace Murmur.App.Core
         private const ushort VK_V = 0x56;
 
         [StructLayout(LayoutKind.Sequential)]
+        private struct MOUSEINPUT
+        {
+            public int dx;
+            public int dy;
+            public uint mouseData;
+            public uint dwFlags;
+            public uint time;
+            public IntPtr dwExtraInfo;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
         private struct KEYBDINPUT
         {
             public ushort wVk;
@@ -20,18 +31,31 @@ namespace Murmur.App.Core
             public IntPtr dwExtraInfo;
         }
 
-        [StructLayout(LayoutKind.Sequential)]
+        [StructLayout(LayoutKind.Explicit)]
         private struct INPUT
         {
+            [FieldOffset(0)]
             public uint type;
+            [FieldOffset(8)]
+            public MOUSEINPUT mi;
+            [FieldOffset(8)]
             public KEYBDINPUT ki;
         }
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
-        public static void SendCtrlV()
+        public static int InputSize
         {
+            get
+            {
+                return Marshal.SizeOf(typeof(INPUT));
+            }
+        }
+
+        public static bool TrySendCtrlV(out string error)
+        {
+            error = null;
             try
             {
                 INPUT[] inputs = new INPUT[4];
@@ -60,7 +84,29 @@ namespace Murmur.App.Core
                 inputs[3].ki.time = 0;
                 inputs[3].ki.dwExtraInfo = IntPtr.Zero;
                 int size = Marshal.SizeOf(typeof(INPUT));
-                SendInput(4, inputs, size);
+                uint sent = SendInput(4, inputs, size);
+                if (sent == 4)
+                {
+                    error = null;
+                    return true;
+                }
+                int lastError = Marshal.GetLastWin32Error();
+                error = "SendInput inserted " + sent.ToString() + " of 4 inputs (error " + lastError.ToString() + ").";
+                return false;
+            }
+            catch (Exception ex)
+            {
+                error = ex.Message;
+                return false;
+            }
+        }
+
+        public static void SendCtrlV()
+        {
+            try
+            {
+                string error;
+                TrySendCtrlV(out error);
             }
             catch
             {
