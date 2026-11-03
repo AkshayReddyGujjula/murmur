@@ -31,7 +31,10 @@ a separate notification channel. No more delegates need polling or waiting.
 User screenshots at 13:15 show no five-bar waveform icon. Read-only checks confirm root
 Murmur.exe is running (PID 33008 at last observation), and app log reports two successful
 takes and clipboard copies; no clipboard/transcript contents were read. No new crash seen.
-Running binary is the earlier startup repair; it has not been restarted by the agent.
+After explicit user approval, the agent gracefully quit PID 33008, replaced only root
+Murmur.exe with the prepared build (matching SHA256), and launched PID 32204. The log
+shows startup at 13:22:34 UTC, Engine Ready at 13:22:35 and the tray refresh at 13:22:35.
+No recording was started. Actual tray visibility still awaits the user's confirmation.
 
 Prepared build adds RefreshRegistration (Visible false/true) after startup once and on explicit
 reopen; no Windows settings change or idle timer. Registration failure is a hypothesis until
@@ -42,11 +45,11 @@ C:\Users\aksha\.t3\worktrees\STT App\murmur-repair-integration\build\Murmur.exe
 
 Full offline suite passed after audio/overlay/tray integration, including Ui239, Startup56,
 Core/Audio/Wiring and all harness groups; one reparse fixture skipped. Additional Engine
-missing-composer boundary tests were added afterwards and are being checked. Build and
+missing-composer boundary tests passed (415 assertions). Build and
 git diff --check passed. See docs/REPAIR-2026-11-03.md for evidence and review triage.
 
-Finish local checkpoint and fast-forward root after validation; root executable is in use,
-so do not overwrite or restart it without user approval. The user requires approval for
+Code is saved at d18abf7 and fast-forwarded to root. Root executable is now updated and
+in use; do not overwrite or restart it again without user approval. The user requires approval for
 manual app launches/restarts, mic/clipboard/settings/installations. Existing Claude session
 remains completely off limits. Ask approval to restart ONLY Murmur with the prepared build
 as the final live step; user can do it themselves. No microphone test automatically.
