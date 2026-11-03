@@ -1,5 +1,9 @@
 # Approved rebuild plan
 
+Historical planning record from 31 October 2026. Current setup and publication
+instructions are in README.md and RESUME.md. The user subsequently authorized
+committing, merging to main, and publishing the project publicly on GitHub.
+
 The user approved this plan and required deletion of the entire old implementation
 on 2026-10-31. Local commits/branches are allowed; pushing is prohibited.
 

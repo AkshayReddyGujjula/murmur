@@ -40,5 +40,7 @@ namespace Murmur.App.Ui
         {
             return (float[])values.Clone();
         }
+
+        internal void CopyTo(float[] destination) { Array.Copy(values, destination, values.Length); }
     }
 }

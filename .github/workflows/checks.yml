@@ -1,0 +1,33 @@
+name: Windows checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-package:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Offline checks
+        run: node scripts/build.mjs test
+      - name: Native ConPTY regression
+        run: node scripts/test-conpty.mjs
+      - name: Build release package
+        run: node scripts/package.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Murmur-windows-x64
+          path: |
+            release/*.zip
+            release/*.sha256
+          if-no-files-found: error

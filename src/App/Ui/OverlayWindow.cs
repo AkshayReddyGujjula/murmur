@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -9,7 +10,7 @@ namespace Murmur.App.Ui
 {
     public sealed class OverlayWindow : Form
     {
-        private const int BarCount = 24;
+        private const int BarCount = OverlayMotion.Bars;
         private const int WsExTransparent = 0x00000020;
         private const int WsExToolWindow = 0x00000080;
         private const int WsExTopMost = 0x00000008;
@@ -28,6 +29,15 @@ namespace Murmur.App.Ui
         private readonly WaveHistory wave;
         private readonly OverlayState state;
         private readonly OverlayFramePresenter presenter;
+        private readonly Stopwatch animation = Stopwatch.StartNew();
+        private readonly WaveMotion animatedWave = new WaveMotion();
+        private readonly float[] samples = new float[BarCount];
+        private SizeF fromSize, targetSize;
+        private OverlayMode previousMode;
+        private string previousCaption = String.Empty;
+        private bool compactResult, previousCompact, animate = true;
+        private double lastTick, nextWaveSample;
+        private long levelAt;
 
         private string caption;
         private float pendingLevel;
@@ -55,7 +65,7 @@ namespace Murmur.App.Ui
             wave = new WaveHistory(BarCount);
             presenter = framePresenter ?? new OverlayFramePresenter();
             timer = new Timer();
-            timer.Interval = 33;
+            timer.Interval = 15;
             timer.Tick += OnTick;
         }
 
@@ -99,14 +109,33 @@ namespace Murmur.App.Ui
             {
                 pendingLevel = level;
                 hasLevel = true;
+                levelAt = Stopwatch.GetTimestamp();
             }
         }
 
         public void ShowMode(OverlayMode overlayMode, string text)
         {
+            ShowModeCore(overlayMode, text, false);
+        }
+
+        public void ShowResult(bool copied, string description)
+        {
+            ShowModeCore(copied ? OverlayMode.Done : OverlayMode.Error, description, true);
+        }
+
+        private void ShowModeCore(OverlayMode overlayMode, string text, bool compact)
+        {
             if (disposed) return;
+            bool wasShowing = state.IsShowing;
+            SizeF current = targetSize.Width > 0
+                ? OverlayMotion.Bounds(Width, Height, fromSize, targetSize, animation.Elapsed.TotalSeconds, animate).Size : SizeF.Empty;
+            previousMode = state.Mode;
+            previousCaption = caption;
+            previousCompact = compactResult;
             state.Enter(overlayMode, DateTime.UtcNow);
             caption = text == null ? String.Empty : text;
+            AccessibleName = caption;
+            compactResult = compact;
 
             if (overlayMode == OverlayMode.Hidden)
             {
@@ -115,6 +144,14 @@ namespace Murmur.App.Ui
                 return;
             }
 
+            bool enabled;
+            animate = !SystemParametersInfo(0x1042, 0, out enabled, 0) || enabled; // SPI_GETCLIENTAREAANIMATION
+            float scale = GetScale();
+            int resultSize = (int)Math.Round(OverlayMotion.Height * scale);
+            targetSize = compact ? new Size(resultSize, resultSize) : Measure(overlayMode, caption, scale);
+            fromSize = wasShowing && current.Width > 0 ? current : new SizeF(targetSize.Width * 0.82f, targetSize.Height * 0.92f);
+            animation.Restart(); lastTick = 0; nextWaveSample = 0;
+
             if (overlayMode == OverlayMode.Recording)
             {
                 lock (sync)
@@ -122,6 +159,7 @@ namespace Murmur.App.Ui
                     ResetWave();
                     pendingLevel = 0f;
                     hasLevel = false;
+                    animatedWave.Clear();
                 }
             }
 
@@ -160,7 +198,7 @@ namespace Murmur.App.Ui
             }
 
             DateTime now = DateTime.UtcNow;
-            double seconds = (now - state.ShownAt).TotalSeconds;
+            double seconds = animation.Elapsed.TotalSeconds;
             if (state.ShouldHide(now))
             {
                 ShowMode(OverlayMode.Hidden, null);
@@ -169,15 +207,21 @@ namespace Murmur.App.Ui
 
             if (state.Mode == OverlayMode.Recording)
             {
-                float level;
-                lock (sync)
+                if (seconds >= nextWaveSample)
                 {
-                    level = hasLevel ? pendingLevel : 0f;
-                    hasLevel = false;
+                    float level;
+                    lock (sync)
+                    {
+                        double age = (Stopwatch.GetTimestamp() - levelAt) / (double)Stopwatch.Frequency;
+                        level = hasLevel && age < 0.18 ? pendingLevel : 0f;
+                    }
+                    wave.Push(level);
+                    wave.CopyTo(samples);
+                    nextWaveSample = seconds + 1.0 / 45.0;
                 }
-                wave.Push(level);
+                animatedWave.Step(samples, seconds - lastTick);
             }
-
+            lastTick = seconds;
             Render(seconds);
         }
 
@@ -186,8 +230,11 @@ namespace Murmur.App.Ui
             Screen screen = Screen.FromPoint(Cursor.Position);
             float scale = GetScale();
             Rectangle area = screen.WorkingArea;
-            int margin = (int)Math.Round(24f * scale);
-            Size size = Measure(state.Mode, caption, scale);
+            int margin = (int)Math.Round(22f * scale); // 2px transparent animation inset retains the visible 24px margin
+            // Keep one reusable surface through the normal recording/loading/result
+            // sequence. Only the drawn silhouette morphs, not the native DIB size.
+            Size size = new Size((int)Math.Ceiling(Math.Max(OverlayMotion.RecordingWidth * scale, Math.Max(fromSize.Width, targetSize.Width)) + 4f * scale),
+                (int)Math.Ceiling(Math.Max(fromSize.Height, targetSize.Height) + 4f * scale));
             int maximumWidth = area.Width - margin * 2;
             if (maximumWidth > 64 && size.Width > maximumWidth) size.Width = maximumWidth;
             Rectangle bounds = OverlayLayout.Place(area, size, PlaceAtTop, margin);
@@ -232,8 +279,7 @@ namespace Murmur.App.Ui
                 presenter.EnsureFrame(width, height);
                 Graphics graphics = presenter.FrameGraphics;
                 graphics.Clear(Color.Transparent);
-                DrawPill(graphics, width, height);
-                DrawContent(graphics, width, height, seconds);
+                DrawVisual(graphics, width, height, seconds);
                 presenter.Present(target, Left, Top);
             }
             catch (Exception error)
@@ -268,183 +314,28 @@ namespace Murmur.App.Ui
             }
         }
 
-        private static void DrawPill(Graphics graphics, int width, int height)
+        private void DrawVisual(Graphics graphics, int width, int height, double seconds)
         {
-            float radius = height / 2f;
-            using (GraphicsPath shape = Logo.Rounded(new RectangleF(0f, 0f, width, height), radius))
-            using (SolidBrush fill = new SolidBrush(Color.Black))
+            if (targetSize.Width <= 0)
             {
-                graphics.FillPath(fill, shape);
+                OverlayVisual.Pill(graphics, new RectangleF(0, 0, width, height), 1f);
+                return;
             }
-
-            using (GraphicsPath border = Logo.Rounded(new RectangleF(0.5f, 0.5f, width - 1f, height - 1f), Math.Max(0f, radius - 0.5f)))
-            using (Pen pen = new Pen(Color.FromArgb(42, 42, 42), 1f))
-            {
-                graphics.DrawPath(pen, border);
-            }
-        }
-
-        private void DrawContent(Graphics graphics, int width, int height, double seconds)
-        {
-            switch (state.Mode)
-            {
-                case OverlayMode.Recording:
-                    DrawRecording(graphics, width, height);
-                    break;
-                case OverlayMode.Starting:
-                    DrawPulse(graphics, width, height, seconds);
-                    break;
-                case OverlayMode.Working:
-                    DrawShimmer(graphics, width, height, seconds);
-                    break;
-                case OverlayMode.Done:
-                    DrawDone(graphics, width, height);
-                    break;
-                case OverlayMode.Error:
-                    DrawError(graphics, width, height);
-                    break;
-            }
-        }
-
-        private void DrawRecording(Graphics graphics, int width, int height)
-        {
-            float scale = height / 36f;
-            float centreY = height / 2f;
-            float dotRadius = 3f * scale;
-            using (SolidBrush red = new SolidBrush(Color.FromArgb(255, 69, 58)))
-            {
-                graphics.FillEllipse(red, 16f * scale - dotRadius, centreY - dotRadius, dotRadius * 2f, dotRadius * 2f);
-            }
-
-            float left = 28f * scale;
-            float right = width - 14f * scale;
-            float span = right - left;
-            if (span <= 0f) return;
-
-            float gap = 1.6f * scale;
-            float barWidth = (span - gap * (BarCount - 1)) / BarCount;
-            if (barWidth < 1f * scale)
-            {
-                barWidth = 1f * scale;
-                gap = Math.Max(0.5f * scale, (span - barWidth * BarCount) / (BarCount - 1));
-            }
-
-            float[] levels = wave.Snapshot();
-            float maxHeight = height - 12f * scale;
-            if (maxHeight < barWidth) maxHeight = barWidth;
-
-            using (SolidBrush white = new SolidBrush(Color.White))
-            {
-                for (int index = 0; index < BarCount; index++)
-                {
-                    float level = index < levels.Length ? levels[index] : 0f;
-                    if (level < 0f) level = 0f;
-                    if (level > 1f) level = 1f;
-                    float barHeight = barWidth + (maxHeight - barWidth) * level;
-                    float x = left + index * (barWidth + gap);
-                    RectangleF bar = new RectangleF(x, centreY - barHeight / 2f, barWidth, barHeight);
-                    using (GraphicsPath path = Logo.Rounded(bar, barWidth / 2f))
-                    {
-                        graphics.FillPath(white, path);
-                    }
-                }
-            }
-        }
-
-        private static void DrawPulse(Graphics graphics, int width, int height, double seconds)
-        {
-            float scale = height / 36f;
-            float radius = 3f * scale;
-            float spacing = 10f * scale;
-            float centreY = height / 2f;
-            float startX = width / 2f - spacing;
-
-            for (int index = 0; index < 3; index++)
-            {
-                double motion = Math.Sin((seconds * 2.4 - index * 0.23) * Math.PI * 2.0);
-                float alpha = 0.30f + 0.70f * (float)((motion + 1.0) / 2.0);
-                if (alpha < 0f) alpha = 0f;
-                if (alpha > 1f) alpha = 1f;
-                using (SolidBrush brush = new SolidBrush(Color.FromArgb((int)(alpha * 255f), 255, 255, 255)))
-                {
-                    graphics.FillEllipse(brush, startX + index * spacing - radius, centreY - radius, radius * 2f, radius * 2f);
-                }
-            }
-        }
-
-        private static void DrawShimmer(Graphics graphics, int width, int height, double seconds)
-        {
-            float scale = height / 36f;
-            float radius = 2.6f * scale;
-            float spacing = 8.5f * scale;
-            float centreY = height / 2f;
-            float startX = width / 2f - spacing * 2f;
-            float travel = (float)((seconds * 5.0) % 4.0);
-
-            for (int index = 0; index < 5; index++)
-            {
-                float distance = Math.Abs(index - travel);
-                float alpha = 0.22f + 0.78f * Math.Max(0f, 1f - distance * 0.55f);
-                if (alpha > 1f) alpha = 1f;
-                using (SolidBrush brush = new SolidBrush(Color.FromArgb((int)(alpha * 255f), 255, 255, 255)))
-                {
-                    graphics.FillEllipse(brush, startX + index * spacing - radius, centreY - radius, radius * 2f, radius * 2f);
-                }
-            }
-        }
-
-        private void DrawDone(Graphics graphics, int width, int height)
-        {
-            float scale = height / 36f;
-            float padding = 14f * scale;
-            float icon = 12f * scale;
-            float centreY = height / 2f;
-
-            using (Pen pen = new Pen(Color.White, Math.Max(1.5f, 1.6f * scale)))
-            {
-                pen.StartCap = LineCap.Round;
-                pen.EndCap = LineCap.Round;
-                pen.LineJoin = LineJoin.Round;
-                PointF[] check = new PointF[]
-                {
-                    new PointF(padding, centreY),
-                    new PointF(padding + icon * 0.42f, centreY + icon * 0.42f),
-                    new PointF(padding + icon, centreY - icon * 0.45f)
-                };
-                graphics.DrawLines(pen, check);
-            }
-
-            if (String.IsNullOrEmpty(caption)) return;
-            using (Font font = CreateFont(scale))
-            using (StringFormat format = new StringFormat())
-            using (SolidBrush white = new SolidBrush(Color.White))
-            {
-                format.LineAlignment = StringAlignment.Center;
-                format.Alignment = StringAlignment.Near;
-                format.Trimming = StringTrimming.EllipsisCharacter;
-                format.FormatFlags = StringFormatFlags.NoWrap;
-                float textLeft = padding + icon + 8f * scale;
-                float textWidth = Math.Max(0f, width - textLeft - padding);
-                graphics.DrawString(caption, font, white, new RectangleF(textLeft, 0f, textWidth, height), format);
-            }
-        }
-
-        private void DrawError(Graphics graphics, int width, int height)
-        {
-            if (caption.Length == 0) return;
-            float scale = height / 36f;
-            float padding = 14f * scale;
-            using (Font font = CreateFont(scale))
-            using (StringFormat format = new StringFormat())
-            using (SolidBrush red = new SolidBrush(Color.FromArgb(255, 69, 58)))
-            {
-                format.LineAlignment = StringAlignment.Center;
-                format.Alignment = StringAlignment.Center;
-                format.Trimming = StringTrimming.EllipsisCharacter;
-                format.FormatFlags = StringFormatFlags.NoWrap;
-                RectangleF textBounds = new RectangleF(padding, 0f, Math.Max(0f, width - padding * 2f), height);
-                graphics.DrawString(caption, font, red, textBounds, format);
-            }
+            RectangleF pill = OverlayMotion.Bounds(width, height, fromSize, targetSize, seconds, animate);
+            double duration = state.Mode == OverlayMode.Done ? OverlayState.DoneHideSeconds
+                : state.Mode == OverlayMode.Error ? OverlayState.ErrorHideSeconds : Double.MaxValue;
+            float opacity = OverlayMotion.EntranceOpacity(previousMode == OverlayMode.Hidden, seconds, animate)
+                * (animate ? OverlayMotion.Ease((duration - seconds) / 0.18) : 1f);
+            float exit = animate ? OverlayMotion.Ease((duration - seconds) / 0.18) : 1f;
+            float shrink = 0.94f + 0.06f * exit;
+            pill.Inflate(-pill.Width * (1f - shrink) / 2f, -pill.Height * (1f - shrink) / 2f);
+            OverlayVisual.Pill(graphics, pill, opacity);
+            float blend = animate ? OverlayMotion.Ease(seconds / 0.16) : 1f;
+            if (previousMode != OverlayMode.Hidden && blend < 1f)
+                OverlayVisual.Content(graphics, pill, previousMode, previousCompact, previousCaption,
+                    animatedWave.Values, 0.6, opacity * (1f - blend), animate);
+            OverlayVisual.Content(graphics, pill, state.Mode, compactResult, caption,
+                animatedWave.Values, seconds, opacity * blend, animate);
         }
 
         private static Font CreateFont(float scale)
@@ -454,17 +345,17 @@ namespace Murmur.App.Ui
 
         private static Size Measure(OverlayMode overlayMode, string text, float scale)
         {
-            int height = (int)Math.Round(36f * scale);
+            int height = (int)Math.Round(OverlayMotion.Height * scale);
             switch (overlayMode)
             {
                 case OverlayMode.Recording:
-                    return new Size((int)Math.Round(132f * scale), height);
+                    return new Size((int)Math.Round(OverlayMotion.RecordingWidth * scale), height);
                 case OverlayMode.Starting:
                 case OverlayMode.Working:
                     return new Size((int)Math.Round(110f * scale), height);
                 case OverlayMode.Done:
                 {
-                    float width = (14f + 12f + 8f + 14f) * scale + MeasureText(text, scale);
+                    float width = 28f * scale + MeasureText(text, scale);
                     int minimum = (int)Math.Round(96f * scale);
                     return new Size(Math.Max((int)Math.Ceiling(width), minimum), height);
                 }
@@ -555,6 +446,9 @@ namespace Murmur.App.Ui
 
         [DllImport("user32.dll")]
         private static extern bool ShowWindow(IntPtr handle, int command);
+
+        [DllImport("user32.dll", EntryPoint = "SystemParametersInfoW")]
+        private static extern bool SystemParametersInfo(uint action, uint parameter, out bool value, uint flags);
 
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool SetWindowPos(

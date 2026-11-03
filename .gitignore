@@ -2,4 +2,9 @@ build/
 .test-output/
 *.user
 *.log
+release/
+.env
+.env.*
+!.env.example
+data/
 

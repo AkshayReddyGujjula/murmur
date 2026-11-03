@@ -26,6 +26,12 @@ namespace Murmur.App.Core
         TopCenter
     }
 
+    public enum PasteDestination
+    {
+        CurrentWindow,
+        OriginalWindow
+    }
+
     public sealed class AppSettings
     {
         public HotkeyChoice Hotkey = HotkeyChoice.CtrlSpace;
@@ -35,6 +41,7 @@ namespace Murmur.App.Core
         public bool KeepHistory = true;
         public int HistoryLimit = 25;
         public bool AutoPaste = false;
+        public PasteDestination PasteInto = PasteDestination.CurrentWindow;
         public bool Sounds = true;
         public bool EscapeCancels = true;
 
@@ -133,6 +140,11 @@ namespace Murmur.App.Core
                                 result.AutoPaste = parsedAuto;
                             }
                         }
+                        else if (string.Equals(key, "PasteInto", StringComparison.OrdinalIgnoreCase))
+                        {
+                            PasteDestination parsed = (PasteDestination)Enum.Parse(typeof(PasteDestination), value, true);
+                            if (Enum.IsDefined(typeof(PasteDestination), parsed)) result.PasteInto = parsed;
+                        }
                         else if (string.Equals(key, "Sounds", StringComparison.OrdinalIgnoreCase))
                         {
                             bool parsedSounds;
@@ -177,6 +189,7 @@ namespace Murmur.App.Core
             lines.Add("KeepHistory=" + KeepHistory.ToString());
             lines.Add("HistoryLimit=" + HistoryLimit.ToString());
             lines.Add("AutoPaste=" + AutoPaste.ToString());
+            lines.Add("PasteInto=" + PasteInto.ToString());
             lines.Add("Sounds=" + Sounds.ToString());
             lines.Add("EscapeCancels=" + EscapeCancels.ToString());
             string directory = Path.GetDirectoryName(path);

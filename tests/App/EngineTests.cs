@@ -23,6 +23,7 @@ namespace Murmur.Tests.App
                 ScreenParserTests();
                 SessionTests();
                 HostTests();
+                EnginePollingPolicyTests();
                 EngineReadyTests();
                 EngineTakeTests();
                 EngineFailureTests();
@@ -51,6 +52,36 @@ namespace Murmur.Tests.App
                 Console.Error.WriteLine("FAIL: " + error.Message);
                 return 1;
             }
+        }
+
+        private static void EnginePollingPolicyTests()
+        {
+            // Inspect the real scheduling policy without starting a thread or timer.
+            DictationEngine engine = (DictationEngine)System.Runtime.Serialization.FormatterServices.GetUninitializedObject(typeof(DictationEngine));
+            System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            EngineOptions options = new EngineOptions();
+            typeof(DictationEngine).GetField("_options", flags).SetValue(engine, options);
+            System.Reflection.FieldInfo phase = typeof(DictationEngine).GetField("_phase", flags);
+            System.Reflection.FieldInfo purpose = typeof(DictationEngine).GetField("_exportPurpose", flags);
+            System.Reflection.MethodInfo delay = typeof(DictationEngine).GetMethod("PollDelayMilliseconds", flags);
+            foreach (object nextPhase in Enum.GetValues(phase.FieldType))
+            {
+                foreach (object nextPurpose in Enum.GetValues(purpose.FieldType))
+                {
+                    phase.SetValue(engine, nextPhase); purpose.SetValue(engine, nextPurpose);
+                    bool completing = nextPhase.ToString() == "FinalWait"
+                        || (nextPhase.ToString() == "ExportWait" && nextPurpose.ToString() == "Transcript");
+                    Check((int)delay.Invoke(engine, null) == (completing ? 50 : 100),
+                        "only finalization and transcript export poll faster: " + nextPhase + "/" + nextPurpose);
+                }
+            }
+            phase.SetValue(engine, Enum.Parse(phase.FieldType, "FinalWait"));
+            options.PollMs = 5;
+            Check((int)delay.Invoke(engine, null) == 5, "completion polling preserves faster custom intervals");
+            options.PollMs = 100; options.CompletionPollMs = 0;
+            Check((int)delay.Invoke(engine, null) == 1, "completion polling cannot create a zero-interval timer");
+            Check(options.StableMs == 700 && options.HoldRepeatMs == 50, "settling window and hold cadence remain unchanged");
+            Console.WriteLine("PASS: phase-specific completion polling preserves recording and discard timing.");
         }
 
         private static void EngineExportEdgeTests()

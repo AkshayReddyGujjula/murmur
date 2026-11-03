@@ -28,6 +28,7 @@ namespace Murmur.Tests.App
                 CheckLogoIco();
                 CheckLayout();
                 CheckWaveHistory();
+                CheckOverlayMotion();
                 CheckTrayItem();
                 CheckOverlayState();
                 CheckOverlayWindowContract();
@@ -210,6 +211,48 @@ namespace Murmur.Tests.App
 
             WaveHistory large = new WaveHistory(1000);
             Check(large.Snapshot().Length == 256, "wave history bounds its bar count");
+        }
+
+        private static void CheckOverlayMotion()
+        {
+            Check(OverlayMotion.Bars == 27, "waveform has another twenty percent fewer bars than 34");
+            Check(Math.Abs(OverlayMotion.Height / (36f * 1.05f) - 1.10f) < 0.0001f, "pill is another ten percent taller before pixel rounding");
+            Check(OverlayMotion.RecordingWidth == 132f, "recording visual width unchanged");
+            float bar = OverlayMotion.BarWidth(96f);
+            Check(Math.Abs(bar / (96f / 95f) - 1.28f) < 0.001f, "strokes are 28 percent thicker in the same span");
+            Check((96f - bar * OverlayMotion.Bars) / (OverlayMotion.Bars - 1) > 1f, "thicker bars retain clear gaps in the existing pill");
+            Check(OverlayMotion.VisualEnergy(0.08f) == 0, "quiet ambient levels leave the waveform calm");
+            float previous = 0.975f * (float)Math.Pow((0.4f - 0.08f) / 0.92f, 1.5);
+            Check(Math.Abs(OverlayMotion.VisualEnergy(0.4f) / previous - 1.35f) < 0.0001f, "visual response increases another thirty-five percent");
+            Check(OverlayMotion.VisualEnergy(1f) == 1f, "loud sound reaches full visual range without overflowing");
+            Check(Math.Abs(OverlayMotion.BarHeight(OverlayMotion.Height, 1f, 1f) - (OverlayMotion.Height - 4f)) < 0.001f, "strong peaks reach two pixels from the top and bottom");
+            Check(OverlayMotion.BarHeight(OverlayMotion.Height, 0f, 1f) == 2f, "silent bars remain small");
+            Check(OverlayMotion.BarHeight(OverlayMotion.Height * 2, 5f, 1f) <= (OverlayMotion.Height - 4f) * 2, "scaled loud peaks stay within their padding");
+            Check(OverlayMotion.Spring(0) == 0 && OverlayMotion.Spring(0.6) == 1, "spring starts and settles exactly");
+            for (int i = 0; i <= 120; i++)
+            {
+                float p = OverlayMotion.Spring(i / 200.0);
+                Check(!Single.IsNaN(p) && p >= 0f && p < 1.02f, "spring stays gently bounded " + i);
+            }
+            RectangleF end = OverlayMotion.Bounds(136, 42, new SizeF(110, 38), new SizeF(38, 38), 0.7, true);
+            Check(end.Width == end.Height && end.Width == 38f && end.X + end.Width / 2 == 68f, "completion collapses to a centred circle");
+            RectangleF reduced = OverlayMotion.Bounds(136, 42, new SizeF(110, 38), new SizeF(38, 38), 0, false);
+            Check(reduced == end, "reduced motion settles without a transition");
+            Check(OverlayMotion.EntranceOpacity(false, 0, true) == 1f, "visible state transitions never flash the pill transparent");
+            Check(OverlayMotion.EntranceOpacity(true, 0, true) == 0f, "hidden entrance fades in gently");
+            Check(OverlayMotion.EntranceOpacity(true, 0, false) == 1f, "reduced motion entrance is immediately visible");
+            WaveMotion motion = new WaveMotion();
+            float[] target = new float[OverlayMotion.Bars];
+            for (int i = 0; i < target.Length; i++) target[i] = 1f;
+            motion.Step(target, 0.016);
+            Check(motion.Values[0] > 0 && motion.Values[0] < 1, "wave responds immediately with interpolation");
+            for (int i = 0; i < 100; i++) motion.Step(target, 0.016);
+            Check(motion.Values[0] > 0.99, "wave reaches real microphone target");
+            Array.Clear(target, 0, target.Length);
+            motion.Step(target, 3.0);
+            Check(motion.Values[0] >= 0 && motion.Values[0] <= 1, "delayed frames cannot destabilize waveform");
+            for (int i = 0; i < 100; i++) motion.Step(target, 0.016);
+            Check(motion.Values[0] < 0.001f, "wave settles to silence");
         }
 
         private static void CheckTrayItem()

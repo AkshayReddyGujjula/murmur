@@ -490,6 +490,11 @@ namespace Murmur.Transport
 
                 StartupInfoEx startup = new StartupInfoEx();
                 startup.StartupInfo.cb = Marshal.SizeOf(typeof(StartupInfoEx));
+                // Explicit null standard handles let ConPTY supply its own console
+                // handles. Otherwise Windows may duplicate a launcher's redirected
+                // stdin/stdout even with bInheritHandles=false, making Claude exit
+                // as a non-interactive --print invocation.
+                startup.StartupInfo.dwFlags = 0x00000100; // STARTF_USESTDHANDLES
                 startup.lpAttributeList = attributeList;
 
                 char[] block = EnvironmentBlock(environmentOverrides).ToCharArray();

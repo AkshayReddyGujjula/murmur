@@ -34,6 +34,7 @@ namespace Murmur.Tests.App
                 Console.WriteLine("PASS: core settings, history, log, hotkey describe, autostart command, chimes.");
                 TestInputSize();
                 TestAutoPasteGuard();
+                TestAutoPasteDelivery();
                 TestDeleteFile(baseDir);
                 TestHotkeyBothIds();
                 Console.WriteLine("PASS: core autopaste input size, guarded target validation, history deletefile, hotkey dual ids.");
@@ -57,6 +58,7 @@ namespace Murmur.Tests.App
             settings.KeepHistory = false;
             settings.HistoryLimit = 77;
             settings.AutoPaste = true;
+            settings.PasteInto = PasteDestination.OriginalWindow;
             settings.Sounds = false;
             settings.EscapeCancels = false;
             settings.Save(path);
@@ -70,6 +72,7 @@ namespace Murmur.Tests.App
             Check(loaded.KeepHistory == false, "settings keephistory roundtrip");
             Check(loaded.HistoryLimit == 77, "settings historylimit roundtrip");
             Check(loaded.AutoPaste == true, "settings autopaste roundtrip");
+            Check(loaded.PasteInto == PasteDestination.OriginalWindow, "paste destination survives restart");
             Check(loaded.Sounds == false, "settings sounds roundtrip");
             Check(loaded.EscapeCancels == false, "settings escape roundtrip");
 
@@ -81,6 +84,7 @@ namespace Murmur.Tests.App
             Check(defaults.KeepHistory == true, "settings default keephistory");
             Check(defaults.HistoryLimit == 25, "settings default historylimit");
             Check(defaults.AutoPaste == false, "settings default autopaste");
+            Check(defaults.PasteInto == PasteDestination.CurrentWindow, "paste destination defaults to completion focus");
             Check(defaults.Sounds == true, "settings default sounds");
             Check(defaults.EscapeCancels == true, "settings default escape");
 
@@ -353,6 +357,44 @@ namespace Murmur.Tests.App
                 new Type[] { typeof(AutoPasteTarget), typeof(string).MakeByRefType() });
             Check(guarded != null, "autopaste guarded send exists");
             Check(guarded.ReturnType == typeof(bool), "autopaste guarded send returns bool");
+        }
+
+        private static void TestAutoPasteDelivery()
+        {
+            IntPtr original = new IntPtr(10), current = new IntPtr(20);
+            AutoPasteTarget snapshot = new AutoPasteTarget(current, 77);
+            AutoPasteTarget selected = AutoPaste.SelectTarget(PasteDestination.CurrentWindow, original, snapshot);
+            Check(selected.WindowHandle == current && selected.ClipboardSequence == 77, "completion focus accepts switching windows during dictation");
+            selected = AutoPaste.SelectTarget(PasteDestination.OriginalWindow, original, snapshot);
+            Check(selected.WindowHandle == original && selected.ClipboardSequence == 77, "original window policy retains original target and new clipboard");
+
+            AutoPasteDelivery delivery = new AutoPasteDelivery();
+            int sends = 0;
+            bool held = true;
+            AutoPaste.Injector guarded = delegate(out string message) {
+                return AutoPaste.TrySendToTarget(snapshot, delegate { return current; }, delegate { return 77u; }, delegate { return held; },
+                    delegate(out string failure) { sends++; failure = null; return true; }, out message);
+            };
+            string error;
+            Check(delivery.Attempt(0, guarded, out error) == PasteProgress.WaitingForKeys && sends == 0, "held Ctrl waits instead of dropping paste");
+            held = false;
+            Check(delivery.Attempt(25, guarded, out error) == PasteProgress.Sent && sends == 1, "paste sends as soon as modifier released");
+            Check(delivery.Attempt(50, guarded, out error) == PasteProgress.Skipped && sends == 1, "completed paste never sends twice");
+
+            delivery = new AutoPasteDelivery();
+            held = true;
+            Check(delivery.Attempt(1000, guarded, out error) == PasteProgress.Skipped && sends == 1, "held-key retry is bounded");
+            held = false;
+            Check(delivery.Attempt(1025, guarded, out error) == PasteProgress.Skipped && sends == 1, "expired paste cannot fire later");
+
+            delivery = new AutoPasteDelivery();
+            Check(delivery.Attempt(1500, guarded, out error) == PasteProgress.Skipped && sends == 1, "late UI timer cannot paste after deadline even when keys are released");
+
+            delivery = new AutoPasteDelivery();
+            current = new IntPtr(30);
+            Check(delivery.Attempt(0, guarded, out error) == PasteProgress.Skipped && sends == 1, "changed focus cancels even inside retry period");
+            current = snapshot.WindowHandle;
+            Check(delivery.Attempt(25, guarded, out error) == PasteProgress.Skipped && sends == 1, "returning focus never resurrects cancelled paste");
         }
 
         private static bool RunGuardedAutoPaste(

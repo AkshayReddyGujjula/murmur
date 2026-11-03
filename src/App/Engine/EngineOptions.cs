@@ -11,6 +11,7 @@ namespace Murmur.App.Engine
         public int NoSpeechMs = 5000;
         public int ScreenUnavailableTimeoutMs = 10000;
         public int PollMs = 100;
+        public int CompletionPollMs = 50;
         public int HoldRepeatMs = 50;
     }
 }

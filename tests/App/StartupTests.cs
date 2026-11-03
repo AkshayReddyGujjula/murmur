@@ -22,6 +22,7 @@ namespace Murmur.Tests.App
             try
             {
                 CheckArguments();
+                CheckDataLocation();
                 CheckInstanceSignal();
                 CheckFailureFormatting();
                 CheckReportWriting();
@@ -33,6 +34,21 @@ namespace Murmur.Tests.App
                 Console.Error.WriteLine("FAIL: " + error.Message);
                 return 1;
             }
+        }
+
+        private static void CheckDataLocation()
+        {
+            string folder = Path.Combine(Path.GetTempPath(), "murmur-path-test");
+            Check(AppDataLocation.Resolve(folder, null) == Path.Combine(folder, "data"), "portable data stays beside executable");
+            string original = Path.Combine(folder, "original-data");
+            Check(AppDataLocation.Resolve(folder, original + "\r\n") == original, "installed binary preserves original owned data path");
+            bool rejected = false;
+            try { AppDataLocation.Resolve(folder, "relative-data"); } catch (IOException) { rejected = true; }
+            Check(rejected, "relative data location rejected");
+            rejected = false;
+            try { AppDataLocation.Resolve(folder, original + "\nother"); } catch (IOException) { rejected = true; }
+            Check(rejected, "multiple data location lines rejected");
+            Check(DesktopAccess.IntegrityLevel() > 0, "process integrity can be read without shell registration");
         }
 
         private static void CheckArguments()

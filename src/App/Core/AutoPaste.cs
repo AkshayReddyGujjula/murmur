@@ -22,6 +22,13 @@ namespace Murmur.App.Core
 
     public static class AutoPaste
     {
+        public const string KeysHeldError = "Auto-paste skipped: a modifier key is held.";
+
+        public static AutoPasteTarget SelectTarget(PasteDestination destination, IntPtr originalWindow, AutoPasteTarget current)
+        {
+            return destination == PasteDestination.OriginalWindow
+                ? new AutoPasteTarget(originalWindow, current.ClipboardSequence) : current;
+        }
         private const uint INPUT_KEYBOARD = 1;
         private const uint KEYEVENTF_KEYUP = 0x0002;
         private const ushort VK_CONTROL = 0x11;
@@ -121,7 +128,7 @@ namespace Murmur.App.Core
             }
             if (modifierKeyHeld)
             {
-                error = "Auto-paste skipped: a modifier key is held.";
+                error = KeysHeldError;
                 return false;
             }
             return true;

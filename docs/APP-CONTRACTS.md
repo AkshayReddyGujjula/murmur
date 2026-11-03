@@ -64,7 +64,8 @@ public enum EngineState { Stopped, Starting, Ready, Recording, Finalizing, Fault
 public sealed class EngineOptions {
     public string ClaudePath;                         // absolute claude.exe
     public int ReadyTimeoutMs = 45000, ListenTimeoutMs = 8000, FinalizeTimeoutMs = 90000,
-               ExportTimeoutMs = 15000, StableMs = 700, NoSpeechMs = 5000, PollMs = 100, HoldRepeatMs = 50;
+               ExportTimeoutMs = 15000, StableMs = 700, NoSpeechMs = 5000,
+               PollMs = 100, CompletionPollMs = 50, HoldRepeatMs = 50;
 }
 public sealed class DictationEngine : IDisposable {
     public DictationEngine(EngineOptions options, Func<ITerminalHost> terminals, Func<IEngineSession> sessions);
@@ -95,7 +96,7 @@ never block; all timers post into the inbox):
    Then write `" "` every `HoldRepeatMs` and wait for Kind==Listening -> Recording. If not seen
    in `ListenTimeoutMs`: stop spaces, Failed("Microphone did not start"), discard, back to Ready.
    BeginTake during Starting: remember the request and begin when Ready (raise Starting state).
-3. **EndTake** while Recording: stop spaces -> Finalizing. Poll: finalized when not Listening
+3. **EndTake** while Recording: stop spaces -> Finalizing. Poll at `min(PollMs, CompletionPollMs)`: finalized when not Listening
    and ComposerText non-empty and unchanged for `StableMs`. A positively identified empty
    composer and not Listening for `NoSpeechMs` -> Failed("No speech detected"), Ready.
    Missing-composer redraws preserve text stability; continuous absence is bounded by
@@ -103,7 +104,8 @@ never block; all timers post into the inbox):
    Overall `FinalizeTimeoutMs` remains the bound while the provider is still Listening.
    EndTake while Starting (take requested but not yet recording) == CancelTake.
 4. **Export:** delete a stale `ExportPath`, write `"\x07"`, wait for `ExportPath` (poll every
-   `PollMs`, `ExportTimeoutMs`), read it strictly as UTF-8 (strip BOM, max 1 MiB, retry briefly
+   `min(PollMs, CompletionPollMs)` for transcripts, `PollMs` for discards, bounded by
+   `ExportTimeoutMs`), read it strictly as UTF-8 (strip BOM, max 1 MiB, retry briefly
    if the file is still being written), delete it. Non-empty after Trim -> TranscriptReady.
    Then the composer should read empty (the export command clears the prompt file); if it is
    still non-empty after 3 s, recycle the child (dispose, restart via Warm) so the next take is clean.

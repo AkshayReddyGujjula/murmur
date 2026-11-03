@@ -1624,13 +1624,21 @@ namespace Murmur.App.Engine
 
         private void ArmPoll(int generation)
         {
-            int delay = _options.PollMs < 1 ? 1 : _options.PollMs;
+            int delay = PollDelayMilliseconds();
             Timer timer = new Timer(PollCallback, generation, delay, Timeout.Infinite);
             Timer previous = Interlocked.Exchange(ref _pollTimer, timer);
             if (previous != null)
             {
                 previous.Dispose();
             }
+        }
+
+        private int PollDelayMilliseconds()
+        {
+            int normal = Math.Max(1, _options.PollMs);
+            bool completing = _phase == TakePhase.FinalWait
+                || (_phase == TakePhase.ExportWait && _exportPurpose == ExportPurpose.Transcript);
+            return completing ? Math.Min(normal, Math.Max(1, _options.CompletionPollMs)) : normal;
         }
 
         private void ArmHold(int generation)

@@ -43,6 +43,10 @@ namespace Murmur.App
 
         private static int Start(string[] args)
         {
+            DesktopAccess.RequireDesktopAccess();
+            // Install the desktop binary separately while retaining the existing
+            // owned profile/workspace path and its completed Claude setup.
+            Murmur.Probe.IsolatedProfile.RootOverride = delegate { return Path.Combine(AppDataLocation.Root, "feasibility-v1"); };
             // Global + per-user names: one Murmur per Windows user across RDP/fast-user-switching
             // sessions, because all of them would share the same data folder and Claude profile.
             string user = UserKey();
@@ -131,7 +135,7 @@ namespace Murmur.App
                 if (String.IsNullOrEmpty(executable)) return null;
                 string folder = Path.GetDirectoryName(executable);
                 if (String.IsNullOrEmpty(folder)) return null;
-                return Path.Combine(folder, "data", "app");
+                return Path.Combine(AppDataLocation.Root, "app");
             }
             catch (Exception) { return null; }
         }
@@ -197,6 +201,7 @@ namespace Murmur.App
         private int _takeId;
         private bool _takeRecording, _stopping, _unloadWhenReady, _disposed;
         private string _lastTakeFailure;
+        private string _lastResultNotice;
         private bool _accountPending, _accountLogin;
         private DateTime _lastActivityUtc = DateTime.UtcNow;
         private Process _accountProcess;
@@ -204,8 +209,7 @@ namespace Murmur.App
 
         public TrayApp()
         {
-            string exeDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            _dataDir = Path.Combine(exeDir, "data", "app");
+            _dataDir = Path.Combine(AppDataLocation.Root, "app");
             Directory.CreateDirectory(_dataDir);
             _settingsPath = Path.Combine(_dataDir, "settings.ini");
             _historyPath = Path.Combine(_dataDir, "history.dat");
@@ -214,7 +218,7 @@ namespace Murmur.App
             if (!_settings.KeepHistory) TranscriptHistory.DeleteFile(_historyPath);
             _history = new TranscriptHistory(_historyPath, _settings.HistoryLimit);
             _claudePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "bin", "claude.exe");
-            PruneStaleHandoffs(Path.Combine(exeDir, "data", "feasibility-v1", "sessions"));
+            PruneStaleHandoffs(Path.Combine(AppDataLocation.Root, "feasibility-v1", "sessions"));
             _ui = new Control();
             _ui.CreateControl();
             IntPtr force = _ui.Handle; // ensure the marshalling handle exists on the UI thread
@@ -244,6 +248,7 @@ namespace Murmur.App
         public void Start(bool background, InstanceSignal reveal)
         {
             _log.Info("Murmur started.");
+            _log.Info("Desktop integrity level: " + DesktopAccess.IntegrityLevel() + ".");
             // Program creates the event immediately after acquiring the mutex, before
             // constructing TrayApp. Early reopens stay queued until this wait is attached.
             _reveal = reveal;
@@ -370,8 +375,9 @@ namespace Murmur.App
                 if (AccountBusy()) { _overlay.ShowMode(OverlayMode.Error, "Finish the Claude sign-in window first"); return; }
                 if (!File.Exists(_claudePath)) { _overlay.ShowMode(OverlayMode.Error, "Claude Code not found"); return; }
                 _takeRecording = false;
+                _lastResultNotice = null;
                 _stopping = false;
-                _pasteWindow = _settings.AutoPaste ? AutoPaste.CaptureTarget().WindowHandle : IntPtr.Zero;
+                _pasteWindow = AutoPaste.CaptureTarget().WindowHandle;
                 _overlay.ShowMode(OverlayMode.Starting, "");
                 if (_overlayFailed) return;
                 SetCancelKey(true);
@@ -474,35 +480,37 @@ namespace Murmur.App
             IntPtr pasteWindow = _pasteWindow;
             _lastActivityUtc = DateTime.UtcNow;
             EndTakeUi(false);
-            if (_settings.KeepHistory) _history.Add(text);
-            else _lastTranscript = text;
-            string error;
-            if (ClipboardWriter.TrySetText(text, out error))
+            // Keep the in-memory recovery text immediately. Persist encrypted
+            // history only after copying and the initial auto-paste attempt.
+            if (!_settings.KeepHistory) _lastTranscript = text;
+            try
             {
-                _log.Info("Copied transcript of take " + id + " (" + text.Length + " chars).");
-                _overlay.ShowMode(OverlayMode.Done, "Copied");
-                if (_settings.AutoPaste)
+                string error;
+                if (ClipboardWriter.TrySetText(text, out error))
                 {
-                    AutoPasteTarget snapshot = AutoPaste.CaptureTarget();
-                    AutoPasteTarget target = new AutoPasteTarget(pasteWindow, snapshot.ClipboardSequence);
-                    System.Windows.Forms.Timer paste = new System.Windows.Forms.Timer();
-                    _pasteTimer = paste;
-                    paste.Interval = 120;
-                    paste.Tick += delegate {
-                        if (_disposed || _pasteTimer != paste) return;
-                        CancelPendingPaste();
-                        if (_takeId != 0 || !_settings.AutoPaste) return;
-                        string pasteError;
-                        if (!AutoPaste.TrySendToTarget(target, out pasteError)) _log.Info(pasteError);
-                    };
-                    paste.Start();
+                    _log.Info("Copied transcript of take " + id + " (" + text.Length + " chars).");
+                    _lastResultNotice = null;
+                    if (_settings.AutoPaste)
+                    {
+                        AutoPasteTarget snapshot = AutoPaste.CaptureTarget();
+                        AutoPasteTarget target = AutoPaste.SelectTarget(_settings.PasteInto, pasteWindow, snapshot);
+                        BeginAutoPaste(target);
+                    }
+                    else _overlay.ShowResult(true, "Copied");
+                }
+                else
+                {
+                    _log.Info("Clipboard write failed: " + error);
+                    _lastResultNotice = "Couldn't copy - open Recent to try again";
+                    _overlay.ShowResult(false, "Couldn't copy - open Recent in the tray menu");
+                    if (_tray != null) _tray.Notify("Couldn't copy", "Open Recent in the Murmur tray menu to copy the transcript again.");
+                    if (_settings.Sounds) Chimes.Play(Chime.Error);
                 }
             }
-            else
+            finally
             {
-                _log.Info("Clipboard write failed: " + error);
-                _overlay.ShowMode(OverlayMode.Error, "Couldn't copy - open Recent in the tray menu");
-                if (_settings.Sounds) Chimes.Play(Chime.Error);
+                // Clipboard failure still leaves the take available in Recent.
+                if (_settings.KeepHistory) _history.Add(text);
             }
             UnloadIfOnDemand();
         }
@@ -514,13 +522,58 @@ namespace Murmur.App
             if (timer != null) { timer.Stop(); timer.Dispose(); }
         }
 
+        private void CancelPendingPasteFromSettings()
+        {
+            bool pending = _pasteTimer != null;
+            CancelPendingPaste();
+            if (pending && !_overlayFailed) _overlay.ShowResult(true, "Copied");
+        }
+
+        private void BeginAutoPaste(AutoPasteTarget target)
+        {
+            CancelPendingPaste();
+            System.Windows.Forms.Timer paste = new System.Windows.Forms.Timer();
+            _pasteTimer = paste;
+            paste.Interval = 25;
+            Stopwatch elapsed = Stopwatch.StartNew();
+            AutoPasteDelivery delivery = new AutoPasteDelivery();
+            EventHandler attempt = delegate {
+                if (_disposed || _pasteTimer != paste) return;
+                if (_takeId != 0 || !_settings.AutoPaste) { CancelPendingPaste(); return; }
+                string error;
+                PasteProgress progress = delivery.Attempt(elapsed.ElapsedMilliseconds,
+                    delegate(out string message) { return AutoPaste.TrySendToTarget(target, out message); }, out error);
+                if (progress == PasteProgress.WaitingForKeys) return;
+                CancelPendingPaste();
+                if (progress == PasteProgress.Sent) _overlay.ShowResult(true, "Pasted");
+                else
+                {
+                    _log.Info(error);
+                    // Focus rejection can precede the clipboard guard. Check the
+                    // sequence again before telling the user Ctrl+V is available.
+                    bool stillCopied = AutoPaste.CaptureTarget().ClipboardSequence == target.ClipboardSequence;
+                    _lastResultNotice = stillCopied ? "Copied - press Ctrl+V to paste" : "Clipboard changed - copy the transcript from Recent";
+                    _overlay.ShowResult(stillCopied, _lastResultNotice);
+                    if (_tray != null) _tray.Notify(stillCopied ? "Transcript copied" : "Clipboard changed",
+                        stillCopied ? "Automatic paste was skipped. Press Ctrl+V to paste." : "The transcript is in Recent. Copy it again before pasting.");
+                }
+            };
+            paste.Tick += attempt;
+            // No fixed delay: send immediately when possible; briefly wait for the
+            // stop shortcut's keys to be released, while retaining all target guards.
+            attempt(null, EventArgs.Empty);
+            if (_pasteTimer == paste) paste.Start();
+        }
+
         private void OnTakeFailed(int id, string message)
         {
             _lastTakeFailure = message;
             _log.Info("Take " + id + " failed: " + message);
             if (id != _takeId) return;
+            _lastResultNotice = message;
             EndTakeUi(false);
-            _overlay.ShowMode(OverlayMode.Error, message);
+            _overlay.ShowResult(false, message);
+            if (_tray != null) _tray.Notify("Dictation failed", message);
             if (_settings.Sounds) Chimes.Play(Chime.Error);
             UnloadIfOnDemand();
         }
@@ -572,8 +625,13 @@ namespace Murmur.App
             List<TrayItem> menu = new List<TrayItem>();
             menu.Add(Header("Murmur  ·  " + StatusText(_engine.State)));
             menu.Add(Header(_hotkeyReady ? GlobalHotkeys.Label(_settings.Hotkey) + " to dictate" : "Shortcut unavailable - choose another below"));
+            if (!String.IsNullOrEmpty(_lastResultNotice)) menu.Add(Header(_lastResultNotice));
             menu.Add(Item(_takeId == 0 ? "Start dictation" : "Stop dictation", OnHotkey));
             if (_takeId != 0) menu.Add(Item("Cancel dictation", OnCancel));
+            menu.Add(Choice("Auto paste", _settings.AutoPaste, delegate {
+                _settings.AutoPaste = !_settings.AutoPaste;
+                CancelPendingPasteFromSettings(); Save();
+            }));
             menu.Add(Separator());
 
             TrayItem recent = Item("Recent", null);
@@ -622,7 +680,14 @@ namespace Murmur.App
                 _settings.EscapeCancels = !_settings.EscapeCancels; Save();
                 SetCancelKey(_takeId != 0);
             }));
-            options.Children.Add(Choice("Paste automatically after copy", _settings.AutoPaste, delegate { _settings.AutoPaste = !_settings.AutoPaste; Save(); }));
+            TrayItem pasteInto = Item("Paste destination", null);
+            pasteInto.Children.Add(Choice("Window focused when transcription finishes", _settings.PasteInto == PasteDestination.CurrentWindow, delegate {
+                CancelPendingPasteFromSettings(); _settings.PasteInto = PasteDestination.CurrentWindow; Save();
+            }));
+            pasteInto.Children.Add(Choice("Window where dictation started", _settings.PasteInto == PasteDestination.OriginalWindow, delegate {
+                CancelPendingPasteFromSettings(); _settings.PasteInto = PasteDestination.OriginalWindow; Save();
+            }));
+            options.Children.Add(pasteInto);
             options.Children.Add(Choice("Keep recent history", _settings.KeepHistory, delegate {
                 _settings.KeepHistory = !_settings.KeepHistory;
                 if (!_settings.KeepHistory) { _history.Clear(); TranscriptHistory.DeleteFile(_historyPath); }
@@ -653,7 +718,7 @@ namespace Murmur.App
             return Item(Preview(text) + "   " + age, delegate {
                 string error;
                 bool copied = ClipboardWriter.TrySetText(text, out error);
-                if (!_overlayFailed) _overlay.ShowMode(copied ? OverlayMode.Done : OverlayMode.Error, copied ? "Copied" : "Couldn't copy");
+                if (!_overlayFailed) _overlay.ShowResult(copied, copied ? "Copied" : "Couldn't copy");
                 else if (_tray != null) _tray.Notify("Murmur", copied ? "Copied" : "Couldn't copy");
             });
         }
