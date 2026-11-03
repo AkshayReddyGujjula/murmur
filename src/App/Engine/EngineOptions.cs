@@ -9,6 +9,7 @@ namespace Murmur.App.Engine
         public int ExportTimeoutMs = 15000;
         public int StableMs = 700;
         public int NoSpeechMs = 5000;
+        public int ScreenUnavailableTimeoutMs = 10000;
         public int PollMs = 100;
         public int HoldRepeatMs = 50;
     }

@@ -105,6 +105,33 @@ namespace Murmur.Tests.App
                 Check(harness.TakeTranscriptText(id) == "recovered words", "redraw preserves recovered text");
             }
 
+            foreach (bool cancel in new bool[] { false, true })
+            {
+                holding = true;
+                using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                    delegate(FakeTerminal terminal, FakeSession session) {
+                        terminal.OnSpace = delegate { if (holding) terminal.SetScreen(ListeningScreen("")); };
+                    }))
+                {
+                    harness.Options.NoSpeechMs = 40;
+                    harness.Options.ScreenUnavailableTimeoutMs = 150;
+                    harness.Options.FinalizeTimeoutMs = 2500;
+                    harness.Engine.Warm();
+                    Check(harness.WaitState(EngineState.Ready, 3000), "missing composer starts ready");
+                    int id = harness.Engine.BeginTake();
+                    Check(harness.WaitState(EngineState.Recording, 3000), "missing composer records");
+                    holding = false;
+                    harness.TerminalAt(0).SetScreen(UnknownScreen());
+                    if (cancel) harness.Engine.CancelTake(id); else harness.Engine.EndTake(id);
+                    Check(cancel ? harness.WaitTakeDiscard(id, 1000) : harness.WaitTakeFailure(id, 1000),
+                        "permanently missing composer has its own bounded recovery");
+                    if (!cancel) Check(harness.TakeFailureText(id) == "Claude input became unavailable; try again",
+                        "missing composer is not reported as silence");
+                    Check(harness.WaitTerminalCount(2, 1000), "missing composer recycles owned session");
+                    Check(harness.TranscriptCount == 0, "missing composer never delivers fabricated text");
+                }
+            }
+
             holding = true;
             List<FileStream> locks = new List<FileStream>();
             try
@@ -121,6 +148,8 @@ namespace Murmur.Tests.App
                         };
                     }))
                 {
+                    int warnings = 0;
+                    harness.Engine.Warning += delegate { Interlocked.Increment(ref warnings); };
                     harness.Engine.Warm();
                     Check(harness.WaitState(EngineState.Ready, 3000), "locked discard starts ready");
                     int id = harness.Engine.BeginTake();
@@ -133,6 +162,7 @@ namespace Murmur.Tests.App
                     Check(harness.WaitTerminalCount(2, 3000), "locked discard recycles blocked session");
                     Check(terminal.IsDisposed, "locked discard closes owned child");
                     Check(harness.TranscriptCount == 0, "locked discard never delivers text");
+                    Check(warnings == 1, "recoverable cleanup warning has a separate notification channel");
                     CloseAll(locks);
                 }
             }

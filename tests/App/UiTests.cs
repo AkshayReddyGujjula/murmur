@@ -31,6 +31,11 @@ namespace Murmur.Tests.App
                 CheckTrayItem();
                 CheckOverlayState();
                 CheckOverlayWindowContract();
+                CheckOverlayPixelConversion();
+                CheckOverlayPresenter();
+                CheckOverlayRenderReuse();
+                CheckOverlayFaultHandling();
+                CheckOverlaySurfaceFailures();
                 CheckTrayMenuHelper();
                 CheckMenuItemFlags();
                 CheckTrayIconConstruction();
@@ -282,6 +287,288 @@ namespace Murmur.Tests.App
             }
         }
 
+        private static void CheckOverlayPixelConversion()
+        {
+            // 2x2 BGRA frame with a 12-byte stride (four bytes of row padding). The source rows
+            // are top-down; UpdateLayeredWindow expects a bottom-up DIB.
+            byte[] source = new byte[]
+            {
+                10, 20, 30, 128, 200, 150, 100, 255, 0xEE, 0xEE, 0xEE, 0xEE,
+                255, 1, 2, 0, 40, 50, 60, 64, 0xEE, 0xEE, 0xEE, 0xEE
+            };
+            byte[] packed = new byte[16];
+            OverlayPixels.PackPremultipliedBottomUp(source, 12, 2, 2, packed);
+
+            byte[] expected = new byte[]
+            {
+                0, 0, 0, 0, 10, 13, 15, 64,
+                5, 10, 15, 128, 200, 150, 100, 255
+            };
+            bool identical = true;
+            for (int index = 0; index < expected.Length; index++)
+            {
+                if (packed[index] != expected[index]) identical = false;
+            }
+            Check(identical, "pixel conversion is deterministic and bottom-up");
+
+            Check(packed[0] == 0 && packed[1] == 0 && packed[2] == 0 && packed[3] == 0,
+                "pixel conversion zeroes transparent colour");
+            Check(packed[15] == 255 && packed[12] == 200 && packed[13] == 150 && packed[14] == 100,
+                "pixel conversion leaves opaque pixels untouched");
+            Check(packed[8] == 5 && packed[9] == 10 && packed[10] == 15 && packed[11] == 128,
+                "pixel conversion premultiplies partial alpha with rounding");
+
+            bool rejected = false;
+            try
+            {
+                OverlayPixels.PackPremultipliedBottomUp(source, 4, 2, 2, packed);
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                rejected = true;
+            }
+            Check(rejected, "pixel conversion rejects a stride narrower than a row");
+        }
+
+        private static void CheckOverlayPresenter()
+        {
+            FakeOverlayOps ops = new FakeOverlayOps();
+            using (OverlayFramePresenter presenter = new OverlayFramePresenter(ops))
+            {
+                presenter.EnsureFrame(132, 36);
+                Bitmap firstFrame = presenter.Frame;
+                Graphics firstGraphics = presenter.FrameGraphics;
+                byte[] firstRaw = presenter.RawScratch;
+                byte[] firstPacked = presenter.PackedScratch;
+                Check(firstFrame != null && firstGraphics != null && firstRaw != null && firstPacked != null,
+                    "presenter caches a frame at the requested size");
+                Check(firstPacked.Length == 132 * 36 * 4, "packed scratch matches the frame size");
+
+                firstGraphics.Clear(Color.Red);
+                firstGraphics.Clear(Color.Transparent);
+                Color cleared = firstFrame.GetPixel(0, 0);
+                Check(cleared.A == 0 && cleared.R == 0 && cleared.G == 0 && cleared.B == 0,
+                    "reused frame clears to fully transparent pixels");
+
+                presenter.Present(new IntPtr(1), 10, 20);
+                IntPtr firstDc = presenter.MemoryDc;
+                IntPtr firstDib = presenter.Dib;
+                Check(firstDc != IntPtr.Zero && firstDib != IntPtr.Zero, "present creates a DC and DIB");
+                Check(ops.MemoryDcCalls == 1 && ops.DibCalls == 1, "first present creates one DC and DIB");
+                Check(ops.SelectCalls == 1 && ops.UpdateCalls == 1, "first present selects the DIB and updates");
+                Check(ops.DibPixels != null && ops.DibPixels.Length == 132 * 36 * 4,
+                    "first present writes the packed frame to the DIB");
+
+                presenter.EnsureFrame(132, 36);
+                presenter.Present(new IntPtr(1), 10, 20);
+                Check(ReferenceEquals(firstFrame, presenter.Frame), "same-size render reuses the frame");
+                Check(ReferenceEquals(firstGraphics, presenter.FrameGraphics), "same-size render reuses the Graphics");
+                Check(ReferenceEquals(firstRaw, presenter.RawScratch), "same-size render reuses the raw scratch");
+                Check(ReferenceEquals(firstPacked, presenter.PackedScratch), "same-size render reuses the packed scratch");
+                Check(firstDc == presenter.MemoryDc && firstDib == presenter.Dib, "same-size present reuses the DC and DIB");
+                Check(ops.MemoryDcCalls == 1 && ops.DibCalls == 1, "same-size present creates no extra GDI surfaces");
+
+                presenter.EnsureFrame(160, 36);
+                Check(!ReferenceEquals(firstFrame, presenter.Frame), "resize replaces the frame");
+                Check(!ReferenceEquals(firstGraphics, presenter.FrameGraphics), "resize replaces the Graphics");
+                Check(!ReferenceEquals(firstRaw, presenter.RawScratch), "resize replaces the scratch buffers");
+                Check(presenter.MemoryDc == IntPtr.Zero && presenter.Dib == IntPtr.Zero, "resize releases the old DC and DIB");
+                Check(ops.RestoreCalls == 1 && ops.DeleteDibCalls == 1 && ops.DeleteMemoryDcCalls == 1,
+                    "resize restores and deletes the old GDI objects");
+
+                presenter.Present(new IntPtr(1), 0, 0);
+                Check(ops.MemoryDcCalls == 2 && ops.DibCalls == 2, "resize creates a new DC and DIB");
+                Check(ops.UpdateCalls == 3, "resize presents with the new surface");
+            }
+            Check(ops.DeleteDibCalls == 2 && ops.DeleteMemoryDcCalls == 2, "dispose releases the resized DC and DIB");
+            Check(ops.RestoreCalls == 2, "dispose restores the selected object");
+        }
+
+        private static void CheckOverlayRenderReuse()
+        {
+            FakeOverlayOps ops = new FakeOverlayOps();
+            OverlayFramePresenter presenter = new OverlayFramePresenter(ops);
+            using (OverlayWindow window = new OverlayWindow(presenter))
+            {
+                window.RenderIfShowingForTests();
+                Check(presenter.Frame == null && ops.UpdateCalls == 0, "hidden overlay does not render");
+
+                window.RenderForTests(132, 36);
+                Bitmap firstFrame = presenter.Frame;
+                Graphics firstGraphics = presenter.FrameGraphics;
+                byte[] firstRaw = presenter.RawScratch;
+                Check(firstFrame != null && firstGraphics != null && firstRaw != null,
+                    "hidden render builds a reusable frame");
+                Check(ops.UpdateCalls == 1 && ops.DibCalls == 1, "hidden render presents once");
+                Check(ops.DibPixels != null && ops.DibPixels.Length == 132 * 36 * 4,
+                    "hidden render writes the packed frame to the DIB");
+                int centre = ((36 - 1 - 18) * 132 + 66) * 4;
+                Check(ops.DibPixels[centre] == 0 && ops.DibPixels[centre + 1] == 0
+                    && ops.DibPixels[centre + 2] == 0 && ops.DibPixels[centre + 3] == 255,
+                    "rendered pill reaches the bottom-up DIB");
+                int corner = (36 - 1) * 132 * 4;
+                Check(ops.DibPixels[corner + 3] == 0, "rendered corner stays transparent");
+
+                window.RenderForTests(132, 36);
+                Check(ReferenceEquals(firstFrame, presenter.Frame), "same-size render path reuses the frame");
+                Check(ReferenceEquals(firstGraphics, presenter.FrameGraphics), "same-size render path reuses the Graphics");
+                Check(ReferenceEquals(firstRaw, presenter.RawScratch), "same-size render path reuses the scratch");
+                Check(ops.DibCalls == 1 && ops.UpdateCalls == 2, "same-size render path presents without new GDI surfaces");
+
+                window.RenderForTests(180, 36);
+                Check(!ReferenceEquals(firstFrame, presenter.Frame), "resize path replaces the frame");
+                Check(ops.DibCalls == 2 && ops.UpdateCalls == 3, "resize path presents with a new surface");
+                Check(ops.DeleteDibCalls == 1 && ops.DeleteMemoryDcCalls == 1,
+                    "resize path releases the old GDI surface");
+            }
+            Check(ops.DeleteDibCalls == 2 && ops.DeleteMemoryDcCalls == 2,
+                "window dispose releases the cached GDI surface");
+        }
+
+        private static void CheckOverlayFaultHandling()
+        {
+            FakeOverlayOps ops = new FakeOverlayOps();
+            ops.UpdateResult = false;
+            using (OverlayWindow window = new OverlayWindow(new OverlayFramePresenter(ops)))
+            {
+                int faults = 0;
+                string message = null;
+                window.Fault += delegate(string text)
+                {
+                    faults++;
+                    message = text;
+                };
+
+                window.StartTimerForTests();
+                Check(window.TimerEnabledForTests, "overlay timer can run before a present failure");
+                window.RenderForTests(132, 36);
+                Check(ops.UpdateCalls == 1, "overlay reaches UpdateLayeredWindow");
+                Check(faults == 1, "present failure raises Fault once");
+                Check(message != null && message.Length > 0, "fault carries a diagnostic message");
+                Check(!window.TimerEnabledForTests, "present failure stops the animation timer");
+                Check(window.Mode == OverlayMode.Hidden && !window.IsShowing,
+                    "present failure hides the overlay state");
+                Check(ops.ReleaseScreenDcCalls == 1, "present failure releases the screen DC");
+
+                window.StartTimerForTests();
+                window.RenderForTests(132, 36);
+                Check(ops.UpdateCalls == 2, "repeated render retries presentation");
+                Check(faults == 1, "repeated present failure does not notify twice");
+                Check(!window.TimerEnabledForTests, "repeated present failure stops the timer again");
+            }
+            Check(ops.DeleteDibCalls == 1 && ops.DeleteMemoryDcCalls == 1,
+                "window dispose releases a failed present surface");
+        }
+
+        private static void CheckOverlaySurfaceFailures()
+        {
+            for (int scenario = 0; scenario < 3; scenario++)
+            {
+                FakeOverlayOps ops = new FakeOverlayOps();
+                ops.ThrowDib = scenario == 0;
+                ops.ZeroBits = scenario == 1;
+                ops.BadSelect = scenario == 2;
+                using (OverlayFramePresenter presenter = new OverlayFramePresenter(ops))
+                {
+                    presenter.EnsureFrame(4, 4);
+                    bool threw = false;
+                    try { presenter.Present(new IntPtr(1), 0, 0); }
+                    catch (Exception) { threw = true; }
+                    Check(threw, "invalid GDI surface is rejected " + scenario);
+                }
+                Check(ops.ReleaseScreenDcCalls == 1, "failed GDI allocation releases screen DC " + scenario);
+                Check(ops.DeleteMemoryDcCalls == 1, "failed GDI allocation releases memory DC " + scenario);
+                Check(ops.DeleteDibCalls == (scenario == 0 ? 0 : 1), "failed GDI allocation releases bitmap " + scenario);
+                Check(ops.UpdateCalls == 0, "invalid surface is never presented " + scenario);
+            }
+        }
+
+        private sealed class FakeOverlayOps : OverlayNativeOps
+        {
+            internal int ReleaseScreenDcCalls;
+            internal int MemoryDcCalls;
+            internal int DeleteMemoryDcCalls;
+            internal int DibCalls;
+            internal int DeleteDibCalls;
+            internal int SelectCalls;
+            internal int RestoreCalls;
+            internal int UpdateCalls;
+            internal bool UpdateResult = true;
+            internal bool ThrowDib, ZeroBits, BadSelect;
+            internal byte[] DibPixels;
+
+            internal override IntPtr GetScreenDc()
+            {
+                return new IntPtr(0x1000);
+            }
+
+            internal override void ReleaseScreenDc(IntPtr screenDc)
+            {
+                ReleaseScreenDcCalls++;
+            }
+
+            internal override IntPtr CreateMemoryDc(IntPtr screenDc)
+            {
+                MemoryDcCalls++;
+                return new IntPtr(0x2000);
+            }
+
+            internal override bool DeleteMemoryDc(IntPtr memoryDc)
+            {
+                DeleteMemoryDcCalls++;
+                return true;
+            }
+
+            internal override IntPtr CreateDib(IntPtr memoryDc, int width, int height, out IntPtr bits)
+            {
+                DibCalls++;
+                if (ThrowDib) throw new InvalidOperationException("DIB allocation failed");
+                bits = ZeroBits ? IntPtr.Zero : new IntPtr(0x4000);
+                return new IntPtr(0x3000);
+            }
+
+            internal override IntPtr Select(IntPtr memoryDc, IntPtr bitmap)
+            {
+                if (bitmap == new IntPtr(0x3000))
+                {
+                    SelectCalls++;
+                    if (BadSelect) return new IntPtr(-1);
+                    return new IntPtr(0x5000);
+                }
+                RestoreCalls++;
+                return new IntPtr(0x5000);
+            }
+
+            internal override bool DeleteBitmap(IntPtr bitmap)
+            {
+                DeleteDibCalls++;
+                return true;
+            }
+
+            internal override void CopyToDib(byte[] pixels, IntPtr destination)
+            {
+                DibPixels = (byte[])pixels.Clone();
+            }
+
+            internal override bool Update(
+                IntPtr windowHandle,
+                IntPtr screenDc,
+                ref POINT destination,
+                ref SIZE size,
+                IntPtr memoryDc,
+                ref POINT source,
+                ref BLENDFUNCTION blend)
+            {
+                UpdateCalls++;
+                return UpdateResult;
+            }
+
+            internal override int LastError
+            {
+                get { return 5; }
+            }
+        }
+
         private static List<TrayItem> BuildTwoItems()
         {
             List<TrayItem> items = new List<TrayItem>();
@@ -402,6 +689,8 @@ namespace Murmur.Tests.App
                 ContextMenuStrip menu = tray.MenuForTests;
                 Check(menu != null, "tray icon builds a real context menu");
                 Check(!tray.NotifyVisibleForTests, "test tray icon stays hidden");
+                tray.RefreshRegistration();
+                Check(!tray.NotifyVisibleForTests, "registration refresh never displays a hidden test icon");
                 Check(menu.Items.Count == 4, "tray icon builds root items");
                 Check(menu.RenderMode == ToolStripRenderMode.Custom, "renderer assignment puts the root menu in custom mode");
                 Check(menu.Renderer != null, "root menu keeps the dark renderer");

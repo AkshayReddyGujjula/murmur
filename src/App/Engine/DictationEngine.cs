@@ -59,6 +59,7 @@ namespace Murmur.App.Engine
         private long _clearDeadline;
         private long _stableSince;
         private long _emptySince = -1;
+        private long _missingComposerSince = -1;
         private DateTime _exportRequestUtc;
 
         public DictationEngine(EngineOptions options, Func<ITerminalHost> terminals, Func<IEngineSession> sessions)
@@ -87,6 +88,7 @@ namespace Murmur.App.Engine
         public event Action<string> TranscriptReady;
         public event Action<string> Failed;
         public event Action<string> Diagnostic;
+        public event Action<string> Warning;
         public event Action Discarded;
         public event Action<int> TakeRecording;
         public event Action<int, string> TakeTranscript;
@@ -867,6 +869,7 @@ namespace Murmur.App.Engine
             _lastComposer = reading.ComposerText;
             _stableSince = Now();
             _emptySince = -1;
+            _missingComposerSince = -1;
             if (reading.HasComposer && reading.Kind != ScreenKind.Listening && reading.ComposerText.Length == 0)
             {
                 _emptySince = Now();
@@ -879,6 +882,7 @@ namespace Murmur.App.Engine
             ScreenReading reading = ReadScreen();
             if (reading.Kind == ScreenKind.NeedsSignIn) { FailPrompt(SignInMessage); return; }
             if (reading.Kind == ScreenKind.NeedsSetup) { FailPrompt(SetupMessage); return; }
+            if (CheckMissingComposer(reading, false)) return;
             if (reading.Kind == ScreenKind.Listening)
             {
                 _emptySince = -1;
@@ -923,8 +927,6 @@ namespace Murmur.App.Engine
             {
                 // A missing composer during a redraw says nothing about silence.
                 _emptySince = -1;
-                _lastComposer = "";
-                _stableSince = Now();
             }
 
             if (Now() >= _finalDeadline)
@@ -1040,7 +1042,7 @@ namespace Murmur.App.Engine
                     if (!deleted)
                     {
                         RaiseDiagnostic("Handoff cleanup incomplete: " + path);
-                        RaiseFailed("Could not remove temporary dictated text; see Murmur logs.");
+                        RaiseWarning("Could not remove temporary dictated text; see Murmur logs.");
                         HandleDiscardExportFailure("Recycled Claude after the discard handoff could not be deleted", false);
                         return;
                     }
@@ -1078,6 +1080,27 @@ namespace Murmur.App.Engine
             }
             RecycleChild(diagnostic);
             EndPipelineTakeDiscarded();
+        }
+
+        private void RaiseWarning(string message)
+        {
+            Action<string> handler = Warning;
+            if (handler != null) try { handler(message); } catch (Exception) { }
+        }
+
+        private bool CheckMissingComposer(ScreenReading reading, bool cancelling)
+        {
+            if (reading.HasComposer || reading.Kind == ScreenKind.Listening)
+            {
+                _missingComposerSince = -1;
+                return false;
+            }
+            if (_missingComposerSince < 0) _missingComposerSince = Now();
+            if (Now() - _missingComposerSince < _options.ScreenUnavailableTimeoutMs) return false;
+            if (cancelling) EndPipelineTakeDiscarded();
+            else EndPipelineTakeFailure("Claude input became unavailable; try again");
+            RecycleChild("Recycled Claude after the composer disappeared");
+            return true;
         }
 
         private void RestartPendingTakeOnFreshChild(string diagnostic)
@@ -1255,6 +1278,7 @@ namespace Murmur.App.Engine
             _lastComposer = reading.ComposerText;
             _stableSince = Now();
             _emptySince = -1;
+            _missingComposerSince = -1;
             if (reading.HasComposer && reading.Kind != ScreenKind.Listening && reading.ComposerText.Length == 0)
             {
                 _emptySince = Now();
@@ -1271,6 +1295,7 @@ namespace Murmur.App.Engine
         private void PollCancelQuiet(int generation)
         {
             ScreenReading reading = ReadScreen();
+            if (CheckMissingComposer(reading, true)) return;
             bool listening = reading.Kind == ScreenKind.Listening;
             string text = reading.ComposerText;
 
@@ -1305,8 +1330,11 @@ namespace Murmur.App.Engine
             else
             {
                 _emptySince = -1;
-                _lastComposer = "";
-                _stableSince = Now();
+                if (listening)
+                {
+                    _lastComposer = "";
+                    _stableSince = Now();
+                }
             }
 
             if (Now() >= _cancelDeadline)

@@ -48,6 +48,9 @@ namespace Murmur.Tests.App
         {
             TrayApp app = (TrayApp)FormatterServices.GetUninitializedObject(typeof(TrayApp));
             Timer pending = new Timer();
+            pending.Interval = 60000;
+            pending.Start();
+            if (!pending.Enabled) throw new Exception("delayed paste fixture did not start");
             FieldInfo field = typeof(TrayApp).GetField("_pasteTimer", BindingFlags.Instance | BindingFlags.NonPublic);
             field.SetValue(app, pending);
             typeof(TrayApp).GetMethod("CancelPendingPaste", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(app, null);

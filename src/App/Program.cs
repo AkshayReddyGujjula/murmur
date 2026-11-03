@@ -188,6 +188,8 @@ namespace Murmur.App
         private InstanceSignal _reveal;
         private RegisteredWaitHandle _signalWait;
         private bool _hotkeyReady;
+        private bool _overlayFailed;
+        private System.Windows.Forms.Timer _trayRetry;
         private System.Windows.Forms.Timer _pasteTimer;
         private IntPtr _pasteWindow;
         // _takeId: engine id of the take in progress (0 = none), from the start press until it is
@@ -218,10 +220,19 @@ namespace Murmur.App
             IntPtr force = _ui.Handle; // ensure the marshalling handle exists on the UI thread
             GC.KeepAlive(force);
             _overlay = new OverlayWindow();
+            _overlay.Fault += OnOverlayFault;
             _overlay.PlaceAtTop = _settings.Placement == OverlayPlacement.TopCenter;
             _mic = new MicLevelMeter();
             _mic.Level += delegate(float level) { _overlay.PushLevel(level); };
-            _mic.Error += delegate(string message) { _log.Info("Mic level meter unavailable: " + message); };
+            _mic.Error += delegate(string message)
+            {
+                int take = Volatile.Read(ref _takeId);
+                Post(delegate {
+                    _log.Info("Mic level meter unavailable: " + message);
+                    if (take != 0 && take == _takeId && _tray != null)
+                        _tray.Notify("Voice indicator unavailable", message);
+                });
+            };
             _hotkeys = new GlobalHotkeys();
             _hotkeys.Pressed += OnHotkey;
             _hotkeys.CancelPressed += OnCancel;
@@ -243,6 +254,14 @@ namespace Murmur.App
             CreateEngine(); // before the tray: the tray builds its menu from engine state
             _tray = new TrayIcon(BuildMenu);
             _tray.SetState(false, "Murmur");
+            _trayRetry = new System.Windows.Forms.Timer();
+            _trayRetry.Interval = 1500;
+            _trayRetry.Tick += delegate {
+                _trayRetry.Stop(); _trayRetry.Dispose(); _trayRetry = null;
+                _tray.RefreshRegistration();
+                _log.Info("Refreshed notification icon registration after startup.");
+            };
+            _trayRetry.Start();
             _hotkeyReady = _hotkeys.Register(_settings.Hotkey);
             if (!_hotkeyReady)
             {
@@ -279,13 +298,14 @@ namespace Murmur.App
         {
             // Notification banners can be disabled in Windows. The tiny no-activate
             // pill still confirms an explicit launch without opening the microphone.
-            if (_takeId == 0 && !_overlay.IsShowing)
+            if (!_overlayFailed && _takeId == 0 && !_overlay.IsShowing)
                 _overlay.ShowMode(_hotkeyReady && File.Exists(_claudePath) ? OverlayMode.Done : OverlayMode.Error, hint);
         }
 
         private void CheckReveal()
         {
             if (_disposed || _tray == null) return;
+            _tray.RefreshRegistration();
             _log.Info("Another launch asked for tray status.");
             string status = _engine == null ? "Murmur" : StatusText(_engine.State);
             _tray.Notify("Murmur is already running",
@@ -308,6 +328,10 @@ namespace Murmur.App
             _engine.Failed += delegate(string message) { Post(delegate { OnEngineFailed(message); }); };
             _engine.Suspended += delegate { Post(delegate { OnSuspended(); }); };
             _engine.Diagnostic += delegate(string line) { _log.Info(line); };
+            _engine.Warning += delegate(string message) { Post(delegate {
+                _log.Info(message);
+                if (_tray != null) _tray.Notify("Murmur", message);
+            }); };
         }
 
         private void Post(MethodInvoker action)
@@ -335,6 +359,11 @@ namespace Murmur.App
         private void OnHotkey()
         {
             CancelPendingPaste();
+            if (_overlayFailed)
+            {
+                if (_tray != null) _tray.Notify("Voice indicator unavailable", "Restart Murmur before dictating again. Details are in the logs folder.");
+                return;
+            }
             _lastActivityUtc = DateTime.UtcNow;
             if (_takeId == 0)
             {
@@ -344,6 +373,7 @@ namespace Murmur.App
                 _stopping = false;
                 _pasteWindow = _settings.AutoPaste ? AutoPaste.CaptureTarget().WindowHandle : IntPtr.Zero;
                 _overlay.ShowMode(OverlayMode.Starting, "");
+                if (_overlayFailed) return;
                 SetCancelKey(true);
                 _takeId = _engine.BeginTake();
                 _log.Info("Take " + _takeId + " requested (engine " + _engine.State + ").");
@@ -360,6 +390,7 @@ namespace Murmur.App
             _stopping = true;
             _mic.Stop();
             _overlay.ShowMode(OverlayMode.Working, "");
+            if (_overlayFailed) return;
             if (_settings.Sounds) Chimes.Play(Chime.Stop);
             _engine.EndTake(_takeId);
             _log.Info("Take " + _takeId + " stopped by shortcut.");
@@ -418,8 +449,21 @@ namespace Murmur.App
             if (id != _takeId || _stopping) return;
             _takeRecording = true;
             _overlay.ShowMode(OverlayMode.Recording, "");
+            if (_overlayFailed) return;
             _mic.Start(); // the meter only runs while Claude is actually listening
             if (_settings.Sounds) Chimes.Play(Chime.Start);
+        }
+
+        private void OnOverlayFault(string message)
+        {
+            _overlayFailed = true;
+            bool cancelled = _takeId != 0;
+            _log.Info("Voice indicator unavailable: " + message);
+            if (cancelled) OnCancel();
+            if (_tray != null) _tray.Notify("Voice indicator unavailable", "Restart Murmur before dictating again.");
+            StartupFailure.ShowMessage("Murmur could not display the voice indicator.\r\n\r\n" +
+                (cancelled ? "The current take was cancelled.\r\n" : "") +
+                "Restart Murmur before dictating again.\r\n\r\n" + message);
         }
 
         private void OnTakeTranscript(int id, string text)
@@ -608,8 +652,9 @@ namespace Murmur.App
         {
             return Item(Preview(text) + "   " + age, delegate {
                 string error;
-                if (ClipboardWriter.TrySetText(text, out error)) _overlay.ShowMode(OverlayMode.Done, "Copied");
-                else _overlay.ShowMode(OverlayMode.Error, "Couldn't copy");
+                bool copied = ClipboardWriter.TrySetText(text, out error);
+                if (!_overlayFailed) _overlay.ShowMode(copied ? OverlayMode.Done : OverlayMode.Error, copied ? "Copied" : "Couldn't copy");
+                else if (_tray != null) _tray.Notify("Murmur", copied ? "Copied" : "Couldn't copy");
             });
         }
 
@@ -771,6 +816,7 @@ namespace Murmur.App
         {
             if (_disposed) return;
             _disposed = true;
+            if (_trayRetry != null) { _trayRetry.Stop(); _trayRetry.Dispose(); _trayRetry = null; }
             CancelPendingPaste();
             _overlay.ShowMode(OverlayMode.Hidden, "");
             _idleTimer.Stop(); _idleTimer.Dispose();

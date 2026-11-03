@@ -96,8 +96,11 @@ never block; all timers post into the inbox):
    in `ListenTimeoutMs`: stop spaces, Failed("Microphone did not start"), discard, back to Ready.
    BeginTake during Starting: remember the request and begin when Ready (raise Starting state).
 3. **EndTake** while Recording: stop spaces -> Finalizing. Poll: finalized when not Listening
-   and ComposerText non-empty and unchanged for `StableMs`. Empty and not Listening for
-   `NoSpeechMs` -> Failed("No speech detected"), Ready. Overall `FinalizeTimeoutMs`.
+   and ComposerText non-empty and unchanged for `StableMs`. A positively identified empty
+   composer and not Listening for `NoSpeechMs` -> Failed("No speech detected"), Ready.
+   Missing-composer redraws preserve text stability; continuous absence is bounded by
+   `ScreenUnavailableTimeoutMs` (10 s), with a distinct failure and owned-session recycle.
+   Overall `FinalizeTimeoutMs` remains the bound while the provider is still Listening.
    EndTake while Starting (take requested but not yet recording) == CancelTake.
 4. **Export:** delete a stale `ExportPath`, write `"\x07"`, wait for `ExportPath` (poll every
    `PollMs`, `ExportTimeoutMs`), read it strictly as UTF-8 (strip BOM, max 1 MiB, retry briefly

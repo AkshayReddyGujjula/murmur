@@ -9,6 +9,9 @@ namespace Murmur.App.Audio
 
     internal static class MeterTeardown
     {
+        // waveInUnprepareHeader on a never-prepared buffer is a documented no-op
+        // that returns 0; MicLevelMeter still tracks actual preparations so it
+        // only calls unprepare for headers the driver accepted.
         public const int StillPlaying = 33;
         public const int MaxUnprepareRetries = 10;
         public const int RetryDelayMs = 10;

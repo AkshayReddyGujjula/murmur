@@ -19,6 +19,7 @@ namespace Murmur.App.Ui
         private readonly Icon idleIcon;
         private readonly Icon recordingIcon;
         private bool disposed;
+        private readonly bool visibleRequested;
 
         public TrayIcon(Func<List<TrayItem>> buildMenu)
             : this(buildMenu, true)
@@ -29,6 +30,7 @@ namespace Murmur.App.Ui
         // Custom render mode itself; setting RenderMode = Custom throws NotSupportedException.
         internal TrayIcon(Func<List<TrayItem>> buildMenu, bool visible)
         {
+            visibleRequested = visible;
             this.buildMenu = buildMenu;
             menuFont = new Font("Segoe UI", 9.75f, FontStyle.Regular, GraphicsUnit.Point);
 
@@ -71,6 +73,15 @@ namespace Murmur.App.Ui
             if (disposed) return;
             notify.Icon = recording ? recordingIcon : idleIcon;
             notify.Text = TooltipText(tooltip);
+        }
+
+        public void RefreshRegistration()
+        {
+            if (disposed || !visibleRequested) return;
+            // Force NIM_DELETE/NIM_ADD rather than another NIM_MODIFY. WinForms
+            // otherwise retains its added flag after a failed shell registration.
+            notify.Visible = false;
+            notify.Visible = true;
         }
 
         public void Notify(string title, string text)

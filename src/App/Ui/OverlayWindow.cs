@@ -21,20 +21,25 @@ namespace Murmur.App.Ui
         private const int SwpNoMove = 0x0002;
         private const int SwpNoActivate = 0x0010;
         private const int SwpShowWindow = 0x0040;
-        private const int UlwAlpha = 2;
         private const int MonitorDefaultToNearest = 2;
 
         private readonly Timer timer;
         private readonly object sync = new object();
         private readonly WaveHistory wave;
         private readonly OverlayState state;
+        private readonly OverlayFramePresenter presenter;
 
         private string caption;
         private float pendingLevel;
         private bool hasLevel;
+        private bool faulted;
         private bool disposed;
 
-        public OverlayWindow()
+        public OverlayWindow() : this(null)
+        {
+        }
+
+        internal OverlayWindow(OverlayFramePresenter framePresenter)
         {
             FormBorderStyle = FormBorderStyle.None;
             StartPosition = FormStartPosition.Manual;
@@ -48,10 +53,15 @@ namespace Murmur.App.Ui
             state = new OverlayState();
             caption = String.Empty;
             wave = new WaveHistory(BarCount);
+            presenter = framePresenter ?? new OverlayFramePresenter();
             timer = new Timer();
             timer.Interval = 33;
             timer.Tick += OnTick;
         }
+
+        // Raised once per window when native presentation fails. The overlay has already
+        // stopped its animation and hidden itself when this fires; the host should log it.
+        public event Action<string> Fault;
 
         public bool PlaceAtTop { get; set; }
 
@@ -117,6 +127,7 @@ namespace Murmur.App.Ui
 
             ApplyBounds();
             Render(0.0);
+            if (state.Mode == OverlayMode.Hidden) return; // Render failed and already concealed the window
             ShowNoActivate();
             if (!timer.Enabled) timer.Start();
         }
@@ -129,6 +140,7 @@ namespace Murmur.App.Ui
                 timer.Stop();
                 timer.Tick -= OnTick;
                 timer.Dispose();
+                presenter.Dispose();
             }
             base.Dispose(disposing);
         }
@@ -184,23 +196,75 @@ namespace Murmur.App.Ui
 
         private void Render(double seconds)
         {
-            int width = Width;
-            int height = Height;
+            if (disposed || state.Mode == OverlayMode.Hidden) return;
+            RenderFrame(seconds, Handle, Width, Height);
+        }
+
+        // Test seam: draws and presents at explicit dimensions without creating or showing a
+        // window handle. The injected presenter decides what the native layer does.
+        internal void RenderForTests(int width, int height)
+        {
+            RenderFrame(0.0, IntPtr.Zero, width, height);
+        }
+
+        // Test seam: exercises the normal Render guard without changing the overlay mode.
+        internal void RenderIfShowingForTests()
+        {
+            Render(0.0);
+        }
+
+        internal bool TimerEnabledForTests
+        {
+            get { return timer.Enabled; }
+        }
+
+        internal void StartTimerForTests()
+        {
+            if (!disposed && !timer.Enabled) timer.Start();
+        }
+
+        private void RenderFrame(double seconds, IntPtr target, int width, int height)
+        {
             if (width <= 0 || height <= 0) return;
 
-            using (Bitmap frame = new Bitmap(width, height, PixelFormat.Format32bppArgb))
+            try
             {
-                using (Graphics graphics = Graphics.FromImage(frame))
-                {
-                    graphics.Clear(Color.Transparent);
-                    graphics.SmoothingMode = SmoothingMode.AntiAlias;
-                    graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                    graphics.CompositingMode = CompositingMode.SourceOver;
-                    graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
-                    DrawPill(graphics, width, height);
-                    DrawContent(graphics, width, height, seconds);
-                }
-                Present(frame);
+                presenter.EnsureFrame(width, height);
+                Graphics graphics = presenter.FrameGraphics;
+                graphics.Clear(Color.Transparent);
+                DrawPill(graphics, width, height);
+                DrawContent(graphics, width, height, seconds);
+                presenter.Present(target, Left, Top);
+            }
+            catch (Exception error)
+            {
+                Fail("Overlay presentation failed: " + error.Message);
+            }
+        }
+
+        private void Fail(string message)
+        {
+            bool notify;
+            lock (sync)
+            {
+                notify = !faulted;
+                faulted = true;
+            }
+
+            timer.Stop();
+            state.Enter(OverlayMode.Hidden, DateTime.UtcNow);
+            if (IsHandleCreated) ShowWindow(Handle, SwHide);
+
+            if (!notify) return;
+            Action<string> handler = Fault;
+            if (handler == null) return;
+            try
+            {
+                handler(String.IsNullOrEmpty(message) ? "Overlay presentation failed." : message);
+            }
+            catch (Exception)
+            {
+                // A logging or tray handler must never take the UI thread down with it.
             }
         }
 
@@ -482,168 +546,12 @@ namespace Murmur.App.Ui
                 SwpNoSize | SwpNoMove | SwpNoActivate | SwpShowWindow);
         }
 
-        private void Present(Bitmap frame)
-        {
-            IntPtr screenDc = GetDC(IntPtr.Zero);
-            if (screenDc == IntPtr.Zero) return;
-
-            IntPtr memoryDc = IntPtr.Zero;
-            IntPtr bitmap = IntPtr.Zero;
-            IntPtr previous = IntPtr.Zero;
-            try
-            {
-                memoryDc = CreateCompatibleDC(screenDc);
-                if (memoryDc == IntPtr.Zero) return;
-
-                BITMAPINFO info = new BITMAPINFO();
-                info.bmiHeader.biSize = (uint)Marshal.SizeOf(typeof(BITMAPINFOHEADER));
-                info.bmiHeader.biWidth = frame.Width;
-                info.bmiHeader.biHeight = frame.Height;
-                info.bmiHeader.biPlanes = 1;
-                info.bmiHeader.biBitCount = 32;
-                info.bmiHeader.biCompression = 0;
-                info.bmiHeader.biSizeImage = 0;
-                info.bmiHeader.biXPelsPerMeter = 0;
-                info.bmiHeader.biYPelsPerMeter = 0;
-                info.bmiHeader.biClrUsed = 0;
-                info.bmiHeader.biClrImportant = 0;
-                info.bmiColors = 0;
-
-                IntPtr bits;
-                bitmap = CreateDIBSection(screenDc, ref info, 0, out bits, IntPtr.Zero, 0);
-                if (bitmap == IntPtr.Zero) return;
-
-                previous = SelectObject(memoryDc, bitmap);
-                if (previous == IntPtr.Zero) return;
-                CopyPremultiplied(frame, bits);
-
-                POINT destination = new POINT();
-                destination.X = Left;
-                destination.Y = Top;
-                SIZE size = new SIZE();
-                size.cx = frame.Width;
-                size.cy = frame.Height;
-                POINT source = new POINT();
-                source.X = 0;
-                source.Y = 0;
-                BLENDFUNCTION blend = new BLENDFUNCTION();
-                blend.BlendOp = 0;
-                blend.BlendFlags = 0;
-                blend.SourceConstantAlpha = 255;
-                blend.AlphaFormat = 1;
-
-                UpdateLayeredWindow(Handle, screenDc, ref destination, ref size, memoryDc, ref source, 0, ref blend, UlwAlpha);
-            }
-            finally
-            {
-                if (previous != IntPtr.Zero) SelectObject(memoryDc, previous);
-                if (bitmap != IntPtr.Zero) DeleteObject(bitmap);
-                if (memoryDc != IntPtr.Zero) DeleteDC(memoryDc);
-                ReleaseDC(IntPtr.Zero, screenDc);
-            }
-        }
-
-        private static void CopyPremultiplied(Bitmap frame, IntPtr destination)
-        {
-            int width = frame.Width;
-            int height = frame.Height;
-            BitmapData data = frame.LockBits(
-                new Rectangle(0, 0, width, height),
-                ImageLockMode.ReadOnly,
-                PixelFormat.Format32bppArgb);
-            try
-            {
-                int stride = data.Stride;
-                int bytes = stride * height;
-                int rowBytes = width * 4;
-                byte[] pixels = new byte[bytes];
-                Marshal.Copy(data.Scan0, pixels, 0, bytes);
-                for (int offset = 0; offset < bytes; offset += 4)
-                {
-                    int alpha = pixels[offset + 3];
-                    if (alpha < 255)
-                    {
-                        pixels[offset] = (byte)((pixels[offset] * alpha + 127) / 255);
-                        pixels[offset + 1] = (byte)((pixels[offset + 1] * alpha + 127) / 255);
-                        pixels[offset + 2] = (byte)((pixels[offset + 2] * alpha + 127) / 255);
-                    }
-                }
-                for (int row = 0; row < height; row++)
-                {
-                    int source = row * stride;
-                    int destinationOffset = (height - 1 - row) * rowBytes;
-                    Marshal.Copy(pixels, source, IntPtr.Add(destination, destinationOffset), rowBytes);
-                }
-            }
-            finally
-            {
-                frame.UnlockBits(data);
-            }
-        }
-
         [StructLayout(LayoutKind.Sequential)]
         private struct POINT
         {
             public int X;
             public int Y;
         }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct SIZE
-        {
-            public int cx;
-            public int cy;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct BLENDFUNCTION
-        {
-            public byte BlendOp;
-            public byte BlendFlags;
-            public byte SourceConstantAlpha;
-            public byte AlphaFormat;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct BITMAPINFOHEADER
-        {
-            public uint biSize;
-            public int biWidth;
-            public int biHeight;
-            public ushort biPlanes;
-            public ushort biBitCount;
-            public uint biCompression;
-            public uint biSizeImage;
-            public int biXPelsPerMeter;
-            public int biYPelsPerMeter;
-            public uint biClrUsed;
-            public uint biClrImportant;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct BITMAPINFO
-        {
-            public BITMAPINFOHEADER bmiHeader;
-            public uint bmiColors;
-        }
-
-        [DllImport("user32.dll", SetLastError = true)]
-        private static extern bool UpdateLayeredWindow(
-            IntPtr handle,
-            IntPtr destinationDc,
-            ref POINT destination,
-            ref SIZE size,
-            IntPtr sourceDc,
-            ref POINT source,
-            int colorKey,
-            ref BLENDFUNCTION blend,
-            int flags);
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr GetDC(IntPtr window);
-
-        [DllImport("user32.dll")]
-        private static extern int ReleaseDC(IntPtr window, IntPtr dc);
 
         [DllImport("user32.dll")]
         private static extern bool ShowWindow(IntPtr handle, int command);
@@ -666,26 +574,5 @@ namespace Murmur.App.Ui
 
         [DllImport("shcore.dll")]
         private static extern int GetDpiForMonitor(IntPtr monitor, int dpiType, out uint dpiX, out uint dpiY);
-
-        [DllImport("gdi32.dll")]
-        private static extern IntPtr CreateCompatibleDC(IntPtr dc);
-
-        [DllImport("gdi32.dll")]
-        private static extern bool DeleteDC(IntPtr dc);
-
-        [DllImport("gdi32.dll")]
-        private static extern IntPtr SelectObject(IntPtr dc, IntPtr obj);
-
-        [DllImport("gdi32.dll")]
-        private static extern bool DeleteObject(IntPtr obj);
-
-        [DllImport("gdi32.dll")]
-        private static extern IntPtr CreateDIBSection(
-            IntPtr dc,
-            ref BITMAPINFO info,
-            uint usage,
-            out IntPtr bits,
-            IntPtr section,
-            uint offset);
     }
 }

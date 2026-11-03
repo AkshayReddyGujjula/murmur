@@ -1,57 +1,56 @@
 # Resume, 3 November 2026
 
-User requests autonomous fixes and repeated DeepSeek v4.1 Flash reviews through T3 Code OpenCode.
-Keep everything local; do not operate or inspect the existing Claude session. No mic, clipboard,
-settings changes, installations, or manual live checks. Current tests are offline/fake/hidden.
+## Saved work
 
-## Delivered
+Root branch rebuild/minimal-dictation; all work stays local, no pushes. Parent integration:
+C:\Users\aksha\.t3\worktrees\STT App\murmur-repair-integration
+branch repair/integration-20261103. Root's untracked .gitignore (1) is unrelated; preserve.
 
-- Root branch rebuild/minimal-dictation is at 447c7d6; build/Murmur.exe rebuilt at d828a40
-  (the later commit is documentation only). Root's untracked .gitignore (1) is unrelated; preserve.
-- Integration branch repair/integration-20261103, checkout:
-  C:\Users\aksha\.t3\worktrees\STT App\murmur-repair-integration
-- Both fatal TrayIcon RenderMode=Custom assignments removed; hidden actual-menu constructor
-  regression passes and fails if either invalid setter is restored.
-- Launch confirmation pill, early duplicate named-event reveal, startup/UI error reporting,
-  persistent shortcut-conflict status and tray start/stop/cancel actions.
-- Cancelled/superseded transcript callbacks cannot reach clipboard/history.
-- Optional auto-paste guards original HWND, post-write clipboard sequence and modifier state;
-  pending timer cancelled on new take/shutdown. Off by default.
-- Engine: empty export reports failure; missing composer is not evidence of no speech;
-  locked discard handoff logs retained path and recycles owned session.
-- Full offline suite passed: 403 Engine, 171 Ui, 56 Startup plus Wiring/Core/Audio/harness;
-  1 reparse fixture skipped. Startup/Wiring rerun after last review fixes. Build/diff checks pass.
-- Real shortcut/clipboard/visual acceptance, speech accuracy, seven-minute capture, final
-  idle CPU/RAM remain unverified. See docs/REPAIR-2026-11-03.md for triage/evidence.
+Launch crash fixed (both invalid RenderMode=Custom setters); actual hidden tray-menu tests
+catch each original failure. Startup/reopen hints, named-event reveal, startup/UI diagnostics,
+persistent shortcut-conflict indication, menu start/stop/cancel, stale-transcript suppression,
+guarded optional auto-paste, empty-export and redraw/cleanup recovery are implemented.
 
-## Pending delegates
+Audio lifecycle is off UI: one active worker plus one replaceable pending session. Driver
+hangs cannot grow a waiting-thread chain; failed Close blocks reopening and retains callback
+handles safely until process exit. Tests cover restart storms, blocked open/close, device
+faults, callback suppression, concurrent shutdown, long uptime and TickCount wrapping.
+Current callback handlers must remain nonblocking; never replace Post with Control.Invoke.
 
-T3 delegate_task: provider opencode, model opencode-go/deepseek-v4.1-flash, variant max.
-Three original wait calls are in functions exec cell 46 in the originating runtime.
-Await original results; do not poll T3 tasks. Completion can wake the thread.
+Overlay reuses frame, Graphics, scratch arrays, DC/DIB by dimensions. Hidden tests check
+pixels, reuse/resize, cleanup and failed allocation. Presentation failure cancels a take and
+refuses new recording until restart, with actionable diagnostics. Two final review nits fixed.
 
-1. Make microphone meter lifecycle nonblocking and safe: separate prepared worktree from
-   d828a40; owns src/App/Audio and tests/App/AudioTests.cs. Native lifecycle off UI,
-   no overlapping device sessions, injected fake-device cancellation/restart tests.
-2. Reduce overlay render allocation and report presentation failure: separate worktree;
-   owns OverlayWindow.cs/optional Ui helper and UiTests.cs. Reuse rendering resources,
-   Fault event, hidden tests. Parent must wire Fault to log/tray without recursion.
-3. Recheck integrated engine and paste guards: read-only root review at d828a40.
+All DeepSeek implementation/review delegates are completed. Audio stress and graphics
+ownership reviews found no blocking defects. Engine final-review fixes preserve stability
+across redraw gaps and add a distinct missing-composer bound; cleanup warnings now have
+a separate notification channel. No more delegates need polling or waiting.
 
-All initial reviews and startup/paste implementation delegates completed. Integrated startup
-re-review completed; valid small findings fixed (early reveal, duplicate notifications, wording).
+## Current user issue: tray icon absent
 
-## Next
+User screenshots at 13:15 show no five-bar waveform icon. Read-only checks confirm root
+Murmur.exe is running (PID 33008 at last observation), and app log reports two successful
+takes and clipboard copies; no clipboard/transcript contents were read. No new crash seen.
+Running binary is the earlier startup repair; it has not been restarted by the agent.
 
-Inspect real worker diffs/test evidence; integrate owned patches in integration checkout first.
-Preserve startup tests and current changes. Review audio generations/disposal and overlay GDI
-ownership; wire Fault. Fix verified review findings, then independent lifecycle review.
-Run changed groups, full suite, build; commit explicit owned files, fast-forward root only after
-checking baseline/unchanged tracked state, rebuild root binary. Update this file/report.
-Never push, delete retained worktrees, kill unrelated processes or launch microphone.
+Prepared build adds RefreshRegistration (Visible false/true) after startup once and on explicit
+reopen; no Windows settings change or idle timer. Registration failure is a hypothesis until
+live retest. Hidden tests ensure refresh never shows the test icon. Prepared executable:
+C:\Users\aksha\.t3\worktrees\STT App\murmur-repair-integration\build\Murmur.exe
 
-Rejected findings: EndTake cannot overtake BeginTake in serial FIFO; do not add a 1.5s
-transcription watchdog. Keep cancel quiet window (late words). .NET NotifyIcon handles
-TaskbarCreated already. waveInUnprepareHeader on unprepared buffer returns zero per Microsoft,
-not WAVERR_UNPREPARED. Autostart registration cannot identify manual vs login launch; explicit
---background only. Do not migrate registry entries automatically.
+## Validation and remaining actions
+
+Full offline suite passed after audio/overlay/tray integration, including Ui239, Startup56,
+Core/Audio/Wiring and all harness groups; one reparse fixture skipped. Additional Engine
+missing-composer boundary tests were added afterwards and are being checked. Build and
+git diff --check passed. See docs/REPAIR-2026-11-03.md for evidence and review triage.
+
+Finish local checkpoint and fast-forward root after validation; root executable is in use,
+so do not overwrite or restart it without user approval. The user requires approval for
+manual app launches/restarts, mic/clipboard/settings/installations. Existing Claude session
+remains completely off limits. Ask approval to restart ONLY Murmur with the prepared build
+as the final live step; user can do it themselves. No microphone test automatically.
+
+Unverified: new binary's tray visibility and real audio-device/rendering acceptance, exact
+speech accuracy, long-duration capture, final idle CPU/RAM. Current user's successful take
+logs are evidence of existing app behavior, not validation of every new integration change.
