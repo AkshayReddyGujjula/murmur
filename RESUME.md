@@ -1,6 +1,6 @@
-﻿# Murmur maintainer handoff
+# Murmur maintainer handoff
 
-Current version: see `VERSION`. Publication target: `AkshayReddyGujjula/murmur`, `main`.
+Current version: see `VERSION`. Murmur has visual-only feedback; old sound settings are ignored. Publication target: `AkshayReddyGujjula/murmur`, `main`.
 
 The app is a Windows x64 tray companion around an isolated Claude Code dictation
 session. The current UI has 27 bars, a 132 × 41.58 logical-pixel pill, optional
@@ -28,7 +28,7 @@ not current instructions to block approved releases or change user permissions.
 
 The release preparation reruns the complete offline suite, the native ConPTY smoke
 regression, build and ZIP manifest/checksum checks. The suite includes 436 engine
-assertions, 381 UI checks and 61 startup checks. One existing reparse fixture may
+assertions, 389 UI checks and 61 startup checks. One existing reparse fixture may
 be skipped when link creation is unavailable.
 
 The user has exercised the live desktop flow. Offline checks do not establish

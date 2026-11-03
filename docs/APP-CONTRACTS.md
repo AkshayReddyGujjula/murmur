@@ -137,7 +137,6 @@ public sealed class AppSettings {
     public bool KeepHistory = true;
     public int HistoryLimit = 25;               // clamp 1..200
     public bool AutoPaste = false;
-    public bool Sounds = true;
     public bool EscapeCancels = true;
     public static AppSettings Load(string path);   // missing/corrupt/unknown keys -> defaults, never throws
     public void Save(string path);                 // key=value lines, atomic (temp + replace)
@@ -169,12 +168,10 @@ public static class Autostart {                    // HKCU\Software\Microsoft\Wi
     public static string CommandFor(string exePath); // pure: quoted path plus --background
 }
 public static class AutoPaste { public static void SendCtrlV(); }  // SendInput, only when user enabled
-public enum Chime { Start, Stop, Error }
-public static class Chimes {
-    public static void Play(Chime chime);          // async, never throws; cached tiny sine WAVs via SoundPlayer
-    public static byte[] BuildWav(int frequencyHz, int milliseconds, double volume); // pure, testable
-}
 ```
+
+Murmur emits no feedback audio. Legacy `Sounds` settings are ignored. Tray balloons
+request NIIF_NOSOUND; startup/error dialogs do not use native alert sounds.
 
 ## Audio (`src/App/Audio/`, namespace `Murmur.App.Audio`)
 
@@ -237,7 +234,7 @@ public sealed class TrayItem {                    // menu model, built by Progra
 public sealed class TrayIcon : IDisposable {
     public TrayIcon(Func<List<TrayItem>> buildMenu);  // menu rebuilt on every open
     public void SetState(bool recording, string tooltip);
-    public void Notify(string title, string text);    // balloon
+    public void Notify(string title, string text);    // silent balloon (NIIF_NOSOUND)
     // Left and right click both open the menu (dark renderer: black bg, #1A1A1A hover, white text,
     // #2A2A2A separators, 13px Segoe UI). Headers render dimmed and non-clickable.
 }

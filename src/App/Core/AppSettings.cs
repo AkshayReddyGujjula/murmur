@@ -42,7 +42,6 @@ namespace Murmur.App.Core
         public int HistoryLimit = 25;
         public bool AutoPaste = false;
         public PasteDestination PasteInto = PasteDestination.CurrentWindow;
-        public bool Sounds = true;
         public bool EscapeCancels = true;
 
         public static AppSettings Load(string path)
@@ -145,14 +144,6 @@ namespace Murmur.App.Core
                             PasteDestination parsed = (PasteDestination)Enum.Parse(typeof(PasteDestination), value, true);
                             if (Enum.IsDefined(typeof(PasteDestination), parsed)) result.PasteInto = parsed;
                         }
-                        else if (string.Equals(key, "Sounds", StringComparison.OrdinalIgnoreCase))
-                        {
-                            bool parsedSounds;
-                            if (TryParseBool(value, out parsedSounds))
-                            {
-                                result.Sounds = parsedSounds;
-                            }
-                        }
                         else if (string.Equals(key, "EscapeCancels", StringComparison.OrdinalIgnoreCase))
                         {
                             bool parsedEscape;
@@ -190,7 +181,6 @@ namespace Murmur.App.Core
             lines.Add("HistoryLimit=" + HistoryLimit.ToString());
             lines.Add("AutoPaste=" + AutoPaste.ToString());
             lines.Add("PasteInto=" + PasteInto.ToString());
-            lines.Add("Sounds=" + Sounds.ToString());
             lines.Add("EscapeCancels=" + EscapeCancels.ToString());
             string directory = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(directory))

@@ -87,16 +87,7 @@ namespace Murmur.App.Ui
         public void Notify(string title, string text)
         {
             if (disposed) return;
-            string caption = String.IsNullOrEmpty(title) ? "Murmur" : title;
-            if (caption.Length > 63) caption = caption.Substring(0, 63);
-            string body = text == null ? String.Empty : text;
-            try
-            {
-                notify.ShowBalloonTip(3000, caption, body, ToolTipIcon.None);
-            }
-            catch (Exception)
-            {
-            }
+            SilentBalloon.Show(notify, title, text);
         }
 
         public void Dispose()

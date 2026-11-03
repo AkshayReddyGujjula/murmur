@@ -20,10 +20,13 @@ engine. A startup failure should show an actionable dialog with a details-file p
 6. **No speech**: Ctrl+Space, stay silent 3 s, Ctrl+Space. You should see *No speech detected*.
 7. **Recent**: tray menu → Recent lists the takes; clicking one copies it again.
 8. **Long take**: 2–7 minutes; opening and closing sentences both present.
-9. **Options**: switch the overlay to top, toggle sounds, and change the shortcut. Each takes
+9. **Options**: switch the overlay to top, toggle auto-paste, and change the shortcut. Each takes
    effect immediately and survives a restart.
 10. **Resources**: Task Manager while idle. Murmur.exe should be ~0% CPU. Note its memory and
     the claude.exe child's memory.
 11. **Quit**: tray → Quit. Murmur.exe and its claude.exe child both disappear.
 
 Report anything odd with the last lines of `build\data\app\murmur.log` (tray → Open logs folder).
+
+12. **Silence**: starting, stopping, copying, errors, tray notifications and reopening
+    Murmur should provide visual feedback without playing a sound.

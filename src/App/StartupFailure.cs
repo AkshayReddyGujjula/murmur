@@ -90,7 +90,27 @@ namespace Murmur.App
         {
             try
             {
-                MessageBox.Show(text, "Murmur", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                // MessageBoxIcon.Error plays a Windows alert. This ordinary
+                // dialog preserves the diagnostic message without requesting sound.
+                using (Form dialog = new Form())
+                using (TextBox message = new TextBox())
+                using (Button close = new Button())
+                {
+                    dialog.Text = "Murmur";
+                    dialog.ClientSize = new System.Drawing.Size(520, 240);
+                    dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+                    dialog.MaximizeBox = false; dialog.MinimizeBox = false;
+                    dialog.StartPosition = FormStartPosition.CenterScreen;
+                    dialog.Font = System.Drawing.SystemFonts.MessageBoxFont;
+                    message.Text = text; message.Multiline = true; message.ReadOnly = true;
+                    message.ScrollBars = ScrollBars.Vertical;
+                    message.SetBounds(16, 16, 488, 170);
+                    close.Text = "OK"; close.DialogResult = DialogResult.OK;
+                    close.SetBounds(424, 198, 80, 28);
+                    dialog.Controls.Add(message); dialog.Controls.Add(close);
+                    dialog.AcceptButton = close; dialog.CancelButton = close;
+                    dialog.ShowDialog();
+                }
             }
             catch (Exception)
             {

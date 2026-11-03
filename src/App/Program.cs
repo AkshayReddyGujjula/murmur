@@ -58,7 +58,7 @@ namespace Murmur.App
                     // Ask the running tray to show its status. Never wait, enumerate processes or
                     // use window messages that could steal focus from the current app.
                     if (!StartupArguments.IsBackground(args) && !InstanceSignal.TryReveal(user))
-                        MessageBox.Show("Murmur is already running. Look for its waveform icon in the notification area (including hidden icons).", "Murmur");
+                        StartupFailure.ShowMessage("Murmur is already running. Look for its waveform icon in the notification area (including hidden icons).");
                     return 0;
                 }
                 using (InstanceSignal reveal = InstanceSignal.CreateOwner(user))
@@ -68,7 +68,7 @@ namespace Murmur.App
                     try { probeFree = probe.WaitOne(0); } catch (AbandonedMutexException) { probeFree = true; }
                     if (!probeFree)
                     {
-                        MessageBox.Show("Close the Murmur probe first; it shares the same Claude profile.", "Murmur");
+                        StartupFailure.ShowMessage("Close the Murmur probe first; it shares the same Claude profile.");
                         return 1;
                     }
                     try
@@ -397,7 +397,6 @@ namespace Murmur.App
             _mic.Stop();
             _overlay.ShowMode(OverlayMode.Working, "");
             if (_overlayFailed) return;
-            if (_settings.Sounds) Chimes.Play(Chime.Stop);
             _engine.EndTake(_takeId);
             _log.Info("Take " + _takeId + " stopped by shortcut.");
         }
@@ -457,7 +456,6 @@ namespace Murmur.App
             _overlay.ShowMode(OverlayMode.Recording, "");
             if (_overlayFailed) return;
             _mic.Start(); // the meter only runs while Claude is actually listening
-            if (_settings.Sounds) Chimes.Play(Chime.Start);
         }
 
         private void OnOverlayFault(string message)
@@ -504,7 +502,6 @@ namespace Murmur.App
                     _lastResultNotice = "Couldn't copy - open Recent to try again";
                     _overlay.ShowResult(false, "Couldn't copy - open Recent in the tray menu");
                     if (_tray != null) _tray.Notify("Couldn't copy", "Open Recent in the Murmur tray menu to copy the transcript again.");
-                    if (_settings.Sounds) Chimes.Play(Chime.Error);
                 }
             }
             finally
@@ -574,7 +571,6 @@ namespace Murmur.App
             EndTakeUi(false);
             _overlay.ShowResult(false, message);
             if (_tray != null) _tray.Notify("Dictation failed", message);
-            if (_settings.Sounds) Chimes.Play(Chime.Error);
             UnloadIfOnDemand();
         }
 
@@ -675,7 +671,6 @@ namespace Murmur.App
             options.Children.Add(Choice("Overlay at bottom", _settings.Placement == OverlayPlacement.BottomCenter, delegate { ChangePlacement(OverlayPlacement.BottomCenter); }));
             options.Children.Add(Choice("Overlay at top", _settings.Placement == OverlayPlacement.TopCenter, delegate { ChangePlacement(OverlayPlacement.TopCenter); }));
             options.Children.Add(Separator());
-            options.Children.Add(Choice("Sounds", _settings.Sounds, delegate { _settings.Sounds = !_settings.Sounds; Save(); }));
             options.Children.Add(Choice("Esc cancels recording", _settings.EscapeCancels, delegate {
                 _settings.EscapeCancels = !_settings.EscapeCancels; Save();
                 SetCancelKey(_takeId != 0);

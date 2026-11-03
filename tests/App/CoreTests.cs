@@ -30,8 +30,7 @@ namespace Murmur.Tests.App
                 TestLog(baseDir);
                 TestDescribeLabel();
                 TestCommandFor();
-                TestBuildWav();
-                Console.WriteLine("PASS: core settings, history, log, hotkey describe, autostart command, chimes.");
+                Console.WriteLine("PASS: core settings, history, log, hotkey describe, autostart command.");
                 TestInputSize();
                 TestAutoPasteGuard();
                 TestAutoPasteDelivery();
@@ -59,7 +58,6 @@ namespace Murmur.Tests.App
             settings.HistoryLimit = 77;
             settings.AutoPaste = true;
             settings.PasteInto = PasteDestination.OriginalWindow;
-            settings.Sounds = false;
             settings.EscapeCancels = false;
             settings.Save(path);
             Check(File.Exists(path), "settings file created");
@@ -73,7 +71,6 @@ namespace Murmur.Tests.App
             Check(loaded.HistoryLimit == 77, "settings historylimit roundtrip");
             Check(loaded.AutoPaste == true, "settings autopaste roundtrip");
             Check(loaded.PasteInto == PasteDestination.OriginalWindow, "paste destination survives restart");
-            Check(loaded.Sounds == false, "settings sounds roundtrip");
             Check(loaded.EscapeCancels == false, "settings escape roundtrip");
 
             AppSettings defaults = new AppSettings();
@@ -85,7 +82,6 @@ namespace Murmur.Tests.App
             Check(defaults.HistoryLimit == 25, "settings default historylimit");
             Check(defaults.AutoPaste == false, "settings default autopaste");
             Check(defaults.PasteInto == PasteDestination.CurrentWindow, "paste destination defaults to completion focus");
-            Check(defaults.Sounds == true, "settings default sounds");
             Check(defaults.EscapeCancels == true, "settings default escape");
 
             string corruptPath = Path.Combine(baseDir, "corrupt.ini");
@@ -104,9 +100,11 @@ namespace Murmur.Tests.App
             Check(nullLoad.Hotkey == HotkeyChoice.CtrlSpace, "settings null path defaults");
 
             string unknownPath = Path.Combine(baseDir, "unknown.ini");
-            File.WriteAllText(unknownPath, "UnknownKey=123\nHotkey=CtrlSpace\nFutureKey=abc\n", new UTF8Encoding(false));
+            File.WriteAllText(unknownPath, "UnknownKey=123\nHotkey=CtrlSpace\nSounds=true\nFutureKey=abc\n", new UTF8Encoding(false));
             AppSettings unknown = AppSettings.Load(unknownPath);
             Check(unknown.Hotkey == HotkeyChoice.CtrlSpace, "settings unknown keys ignored");
+            unknown.Save(unknownPath);
+            Check(!File.ReadAllText(unknownPath).Contains("Sounds="), "legacy sound setting is ignored and removed on save");
 
             string clampPath = Path.Combine(baseDir, "clamp.ini");
             File.WriteAllText(clampPath, "IdleUnloadMinutes=0\nHistoryLimit=9999\n", new UTF8Encoding(false));
@@ -231,30 +229,6 @@ namespace Murmur.Tests.App
             Check(command == "\"C:\\Tools\\Murmur.exe\" --background", "autostart command quotes path and launches quietly");
             string empty = Autostart.CommandFor("");
             Check(empty == "\"\"", "commandfor empty");
-        }
-
-        private static void TestBuildWav()
-        {
-            byte[] wav = Chimes.BuildWav(880, 70, 0.25);
-            Check(wav.Length > 44, "wav length");
-            Check(wav[0] == (byte)'R' && wav[1] == (byte)'I' && wav[2] == (byte)'F' && wav[3] == (byte)'F', "wav RIFF");
-            Check(wav[8] == (byte)'W' && wav[9] == (byte)'A' && wav[10] == (byte)'V' && wav[11] == (byte)'E', "wav WAVE");
-            Check(wav[12] == (byte)'f' && wav[13] == (byte)'m' && wav[14] == (byte)'t' && wav[15] == (byte)' ', "wav fmt");
-            Check(wav[36] == (byte)'d' && wav[37] == (byte)'a' && wav[38] == (byte)'t' && wav[39] == (byte)'a', "wav data");
-            int audioFormat = wav[20] | (wav[21] << 8);
-            Check(audioFormat == 1, "wav pcm");
-            int channels = wav[22] | (wav[23] << 8);
-            Check(channels == 1, "wav mono");
-            int bits = wav[34] | (wav[35] << 8);
-            Check(bits == 16, "wav 16bit");
-            int chunkSize = wav[4] | (wav[5] << 8) | (wav[6] << 16) | (wav[7] << 24);
-            Check(chunkSize == wav.Length - 8, "wav chunk size");
-            int dataSize = wav[40] | (wav[41] << 8) | (wav[42] << 16) | (wav[43] << 24);
-            Check(dataSize == wav.Length - 44, "wav data size");
-            byte[] wavLong = Chimes.BuildWav(300, 160, 0.25);
-            Check(wavLong.Length > wav.Length, "wav longer duration longer");
-            byte[] wavStop = Chimes.BuildWav(660, 70, 0.25);
-            Check(wavStop.Length == wav.Length, "wav same duration same length");
         }
 
         private static void TestInputSize()

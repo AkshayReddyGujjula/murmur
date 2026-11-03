@@ -29,6 +29,7 @@ namespace Murmur.Tests.App
                 CheckLayout();
                 CheckWaveHistory();
                 CheckOverlayMotion();
+                CheckSilentNotifications();
                 CheckTrayItem();
                 CheckOverlayState();
                 CheckOverlayWindowContract();
@@ -253,6 +254,26 @@ namespace Murmur.Tests.App
             Check(motion.Values[0] >= 0 && motion.Values[0] <= 1, "delayed frames cannot destabilize waveform");
             for (int i = 0; i < 100; i++) motion.Step(target, 0.016);
             Check(motion.Values[0] < 0.001f, "wave settles to silence");
+        }
+
+        private static void CheckSilentNotifications()
+        {
+            bool called = false;
+            bool sent = SilentBalloon.Show(new IntPtr(4242), 7, new string('t', 80), new string('b', 300),
+                delegate(uint command, ref SilentBalloon.NotificationData data) {
+                    called = true;
+                    Check(command == 1 && data.Flags == 0x10, "silent balloon modifies existing notification only");
+                    Check(data.InfoFlags == 0x10, "notification requests NIIF_NOSOUND with no sound-capable fallback");
+                    Check(data.Window == new IntPtr(4242) && data.Id == 7, "silent notification retains the tray identity");
+                    Check(data.Title.Length == 63 && data.Info.Length == 255, "notification fields fit the native string buffers");
+                    Check(data.Size == 976, "notification struct matches the x64 Unicode shell ABI");
+                    return true;
+                });
+            Check(called && sent, "silent notification passes native success through");
+            Check(!SilentBalloon.Show(IntPtr.Zero, 7, "Murmur", "message", null), "missing notification identity has no fallback");
+            BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            Check(typeof(NotifyIcon).GetField("window", flags) != null && typeof(NotifyIcon).GetField("id", flags) != null,
+                "target Framework exposes the tray identity required for silent notifications");
         }
 
         private static void CheckTrayItem()
@@ -715,10 +736,10 @@ namespace Murmur.Tests.App
             recent.Children.Add(more);
             items.Add(recent);
 
-            TrayItem sounds = new TrayItem();
-            sounds.Text = "Sounds";
-            sounds.Checked = true;
-            items.Add(sounds);
+            TrayItem historyOption = new TrayItem();
+            historyOption.Text = "Keep recent history";
+            historyOption.Checked = true;
+            items.Add(historyOption);
             return items;
         }
 
@@ -752,8 +773,8 @@ namespace Murmur.Tests.App
                 Check(more.DropDown.RenderMode == ToolStripRenderMode.Custom, "second-level menu is in custom mode");
                 Check(ReferenceEquals(more.DropDown.Renderer, menu.Renderer), "second-level menu shares the root renderer");
 
-                ToolStripMenuItem sounds = menu.Items[3] as ToolStripMenuItem;
-                Check(sounds != null && sounds.Checked, "checked state reaches the real menu item");
+                ToolStripMenuItem historyOption = menu.Items[3] as ToolStripMenuItem;
+                Check(historyOption != null && historyOption.Checked, "checked state reaches the real menu item");
             }
         }
     }

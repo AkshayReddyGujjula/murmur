@@ -1,4 +1,4 @@
-﻿<p align="center">
+<p align="center">
   <img src="assets/murmur.png" width="88" alt="Murmur waveform icon">
 </p>
 
@@ -77,6 +77,9 @@ Look in the hidden-icons panel. Reopening Murmur reveals the running instance's 
 | **Recent** in the tray menu | Copy a previous transcript again. |
 | **Quit Murmur** | Close Murmur and its owned Claude child. |
 
+Feedback is visual only. Murmur plays no start, stop or error chimes; its tray
+notifications request silent delivery, and diagnostic dialogs have no alert sound.
+
 The overlay is click-through and never takes keyboard focus. Its 27 separated bars respond to audio with smooth motion; strong peaks can reach close to the pill's edges. The visual meter does not change transcription accuracy.
 
 <details>
@@ -101,7 +104,7 @@ A focus or clipboard change before delivery cancels automatic paste. If the clip
 | Shortcut | Ctrl+Space, Ctrl+Shift+Space, Ctrl+Alt+Space, Alt+Shift+Space |
 | Claude engine | Always ready, sleep after 15 minutes idle, or start on demand |
 | Overlay | Bottom or top of the screen |
-| Feedback | Sounds, Esc cancellation, Windows animation preference |
+| Feedback | Silent visual indicators, Esc cancellation, Windows animation preference |
 | History | Keep recent transcripts or disable history |
 | Startup | Start with Windows |
 
@@ -166,7 +169,7 @@ For details, see [module contracts](docs/APP-CONTRACTS.md), [manual acceptance c
 
 ## Beta status
 
-The current implementation has **436 engine assertions**, **381 UI checks**, and startup, audio, clipboard-guard and handoff coverage. One existing link/reparse fixture is skipped when link creation is unavailable. These are offline checks, not an accuracy benchmark.
+The current implementation has **436 engine assertions**, **389 UI checks**, and startup, audio, clipboard-guard and handoff coverage. One existing link/reparse fixture is skipped when link creation is unavailable. These are offline checks, not an accuracy benchmark.
 
 Short live dictation and the desktop flow have been exercised. Recognition accuracy depends on Claude and the recording environment. Continuous 5–7 minute capture, actual frame pacing and end-to-end latency improvements are not guaranteed. The integration depends on Claude's terminal behavior and may need updates when its CLI changes.
 
