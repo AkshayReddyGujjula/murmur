@@ -155,13 +155,13 @@ public static class ClipboardWriter { public static bool TrySetText(string text,
 public sealed class GlobalHotkeys : IDisposable {  // message-only NativeWindow
     public event Action Pressed; public event Action CancelPressed;
     public bool Register(HotkeyChoice choice);     // RegisterHotKey + MOD_NOREPEAT; false if taken
-    public void SetCancelActive(bool active);      // registers/unregisters plain Escape
+    public bool SetCancelActive(bool active);      // registers/unregisters plain Escape; false on failure
     public static void Describe(HotkeyChoice choice, out uint modifiers, out uint key); // pure, testable
     public static string Label(HotkeyChoice choice);   // "Ctrl+Space"
 }
 public static class Autostart {                    // HKCU\Software\Microsoft\Windows\CurrentVersion\Run, value "Murmur"
     public static bool IsEnabled(); public static void Set(bool enabled, string exePath);
-    public static string CommandFor(string exePath); // pure: quoted path
+    public static string CommandFor(string exePath); // pure: quoted path plus --background
 }
 public static class AutoPaste { public static void SendCtrlV(); }  // SendInput, only when user enabled
 public enum Chime { Start, Stop, Error }
