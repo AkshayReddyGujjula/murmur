@@ -21,6 +21,13 @@ namespace Murmur.App.Ui
         private bool disposed;
 
         public TrayIcon(Func<List<TrayItem>> buildMenu)
+            : this(buildMenu, true)
+        {
+        }
+
+        // The icon is hidden for offline construction tests. Assigning Renderer puts WinForms into
+        // Custom render mode itself; setting RenderMode = Custom throws NotSupportedException.
+        internal TrayIcon(Func<List<TrayItem>> buildMenu, bool visible)
         {
             this.buildMenu = buildMenu;
             menuFont = new Font("Segoe UI", 9.75f, FontStyle.Regular, GraphicsUnit.Point);
@@ -32,7 +39,6 @@ namespace Murmur.App.Ui
             menu = new ContextMenuStrip();
             menu.Font = menuFont;
             menu.Renderer = new DarkRenderer();
-            menu.RenderMode = ToolStripRenderMode.Custom;
             menu.BackColor = Color.Black;
             menu.ForeColor = Color.White;
             menu.ShowCheckMargin = true;
@@ -47,7 +53,17 @@ namespace Murmur.App.Ui
             notify.MouseUp += OnMouseUp;
 
             RebuildMenu();
-            notify.Visible = true;
+            notify.Visible = visible;
+        }
+
+        internal ContextMenuStrip MenuForTests
+        {
+            get { return menu; }
+        }
+
+        internal bool NotifyVisibleForTests
+        {
+            get { return notify.Visible; }
         }
 
         public void SetState(bool recording, string tooltip)
@@ -183,7 +199,6 @@ namespace Murmur.App.Ui
             if (item.DropDownItems.Count > 0)
             {
                 item.DropDown.Renderer = menu.Renderer;
-                item.DropDown.RenderMode = ToolStripRenderMode.Custom;
                 item.DropDown.Font = menuFont;
                 item.DropDown.BackColor = Color.Black;
                 item.DropDown.ForeColor = Color.White;

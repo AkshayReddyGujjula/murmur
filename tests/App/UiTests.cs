@@ -33,6 +33,7 @@ namespace Murmur.Tests.App
                 CheckOverlayWindowContract();
                 CheckTrayMenuHelper();
                 CheckMenuItemFlags();
+                CheckTrayIconConstruction();
                 Console.WriteLine("PASS: Ui logo, ICO export, overlay layout, waveform history and tray model (" + checks + " checks).");
                 return 0;
             }
@@ -354,6 +355,73 @@ namespace Murmur.Tests.App
             {
                 owner.ShowItemToolTips = false;
                 Check(!owner.ShowItemToolTips, "menu owner disables item tooltips");
+            }
+        }
+
+        private static List<TrayItem> BuildNestedMenu()
+        {
+            List<TrayItem> items = new List<TrayItem>();
+            TrayItem header = new TrayItem();
+            header.Text = "Murmur · Ready";
+            header.IsHeader = true;
+            header.Enabled = false;
+            items.Add(header);
+
+            TrayItem separator = new TrayItem();
+            separator.IsSeparator = true;
+            items.Add(separator);
+
+            TrayItem recent = new TrayItem();
+            recent.Text = "Recent";
+            TrayItem copied = new TrayItem();
+            copied.Text = "Copied transcript";
+            copied.OnClick = delegate { };
+            recent.Children.Add(copied);
+            TrayItem more = new TrayItem();
+            more.Text = "More";
+            TrayItem deeper = new TrayItem();
+            deeper.Text = "Deeper";
+            more.Children.Add(deeper);
+            recent.Children.Add(more);
+            items.Add(recent);
+
+            TrayItem sounds = new TrayItem();
+            sounds.Text = "Sounds";
+            sounds.Checked = true;
+            items.Add(sounds);
+            return items;
+        }
+
+        private static void CheckTrayIconConstruction()
+        {
+            // Construct the real NotifyIcon and ContextMenuStrip with the icon hidden. The old code
+            // assigned RenderMode = Custom here and threw NotSupportedException before the window
+            // ever appeared, which the model-only tests above could not catch.
+            using (TrayIcon tray = new TrayIcon(new Func<List<TrayItem>>(BuildNestedMenu), false))
+            {
+                ContextMenuStrip menu = tray.MenuForTests;
+                Check(menu != null, "tray icon builds a real context menu");
+                Check(!tray.NotifyVisibleForTests, "test tray icon stays hidden");
+                Check(menu.Items.Count == 4, "tray icon builds root items");
+                Check(menu.RenderMode == ToolStripRenderMode.Custom, "renderer assignment puts the root menu in custom mode");
+                Check(menu.Renderer != null, "root menu keeps the dark renderer");
+                Check(menu.Items[0] is ToolStripMenuItem && !menu.Items[0].Enabled, "header is a disabled menu item");
+                Check(menu.Items[1] is ToolStripSeparator, "separator is a real separator");
+
+                ToolStripMenuItem recent = menu.Items[2] as ToolStripMenuItem;
+                Check(recent != null, "nested menu root exists");
+                Check(recent.Text == "Recent" && recent.DropDownItems.Count == 2, "nested menu keeps its children");
+                Check(recent.DropDown.RenderMode == ToolStripRenderMode.Custom, "nested menu is in custom mode without direct assignment");
+                Check(ReferenceEquals(recent.DropDown.Renderer, menu.Renderer), "nested menu shares the root renderer");
+                Check(recent.DropDown.Font != null, "nested menu keeps the menu font");
+
+                ToolStripMenuItem more = recent.DropDownItems[1] as ToolStripMenuItem;
+                Check(more != null && more.DropDownItems.Count == 1, "second-level nested menu is built");
+                Check(more.DropDown.RenderMode == ToolStripRenderMode.Custom, "second-level menu is in custom mode");
+                Check(ReferenceEquals(more.DropDown.Renderer, menu.Renderer), "second-level menu shares the root renderer");
+
+                ToolStripMenuItem sounds = menu.Items[3] as ToolStripMenuItem;
+                Check(sounds != null && sounds.Checked, "checked state reaches the real menu item");
             }
         }
     }

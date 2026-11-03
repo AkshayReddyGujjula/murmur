@@ -66,7 +66,7 @@ namespace Murmur.App.Core
             {
                 return "\"\"";
             }
-            return "\"" + exePath + "\"";
+            return "\"" + exePath + "\" --background";
         }
     }
 }

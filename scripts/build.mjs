@@ -7,7 +7,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const compiler = join(process.env.WINDIR || 'C:\Windows', 'Microsoft.NET', 'Framework64', 'v4.0.30319', 'csc.exe');
 if (!existsSync(compiler)) throw new Error('Windows .NET Framework x64 compiler is required. Nothing was installed.');
 const command = process.argv[2] || 'build';
-if (!['build', 'test', 'test-group'].includes(command)) throw new Error('Usage: node scripts/build.mjs [build|test|test-group <Engine|Core|Audio|Ui>]');
+if (!['build', 'test', 'test-group'].includes(command)) throw new Error('Usage: node scripts/build.mjs [build|test|test-group <Engine|Core|Audio|Ui|Startup|Wiring>]');
 
 function run(exe, args, environment = process.env) {
   const result = spawnSync(exe, args, { cwd: root, stdio: 'inherit', windowsHide: true, shell: false, env: environment });
@@ -32,6 +32,8 @@ const appGroups = {
   Core: () => sources('src/App/Core'),
   Audio: () => sources('src/App/Audio'),
   Ui: () => sources('src/App/Ui'),
+  Startup: () => [...sources('src/App'), ...backend],
+  Wiring: () => [...sources('src/App'), ...backend],
 };
 const temporary = join(root, '.test-output', 'tmp');
 const testEnvironment = { ...process.env, TEMP: temporary, TMP: temporary };
@@ -49,7 +51,7 @@ function appGroup(name, required) {
 }
 if (command === 'test-group') {
   const name = process.argv[3];
-  if (!appGroups[name]) throw new Error('Unknown group. Choose Engine, Core, Audio or Ui.');
+  if (!appGroups[name]) throw new Error('Unknown group. Choose Engine, Core, Audio, Ui, Startup or Wiring.');
   appGroup(name, true);
   console.log(`App group ${name} passed.`);
 } else if (command === 'test') {

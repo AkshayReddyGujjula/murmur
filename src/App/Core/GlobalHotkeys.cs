@@ -69,15 +69,15 @@ namespace Murmur.App.Core
             return true;
         }
 
-        public void SetCancelActive(bool active)
+        public bool SetCancelActive(bool active)
         {
             if (disposed)
             {
-                return;
+                return false;
             }
             if (active == cancelActive)
             {
-                return;
+                return true;
             }
             if (active)
             {
@@ -110,6 +110,7 @@ namespace Murmur.App.Core
                 }
                 cancelActive = false;
             }
+            return !active || cancelActive;
         }
 
         public static void Describe(HotkeyChoice choice, out uint modifiers, out uint key)

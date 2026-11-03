@@ -1,7 +1,9 @@
 # Tray app acceptance checks (user-run)
 
 Build first: `node scripts/build.mjs build`. Close any running `Murmur.Probe.exe`. Then run
-`build\Murmur.exe`. It should show a black waveform icon in the tray (^ hidden icons).
+`build\Murmur.exe`. It should briefly show a shortcut hint pill and a black waveform
+icon in the tray (^ hidden icons). Reopening should reveal status without a second
+engine. A startup failure should show an actionable dialog with a details-file path.
 
 1. **Startup**: hover the tray icon after about 10 s. The tooltip should say *Murmur — Ready*.
 2. **Short take**: click into Notepad, press Ctrl+Space. Dots appear, then the live waveform

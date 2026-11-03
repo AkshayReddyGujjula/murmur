@@ -26,15 +26,38 @@ namespace Murmur.App
             // Invoked by the owned Claude child as VISUAL/EDITOR on Ctrl+G. Copies the unsent
             // prompt to the session handoff file, then empties the prompt so the composer is
             // clean for the next take. Must run before any single-instance or UI logic.
-            if (args.Length == 2 && args[0] == "--export-prompt") return ExportPrompt(args[1]);
+            if (StartupArguments.IsPromptExport(args)) return ExportPrompt(args[1]);
 
+            try
+            {
+                if (!StartupArguments.IsValidLaunch(args))
+                    throw new ArgumentException("Use Murmur.exe with no arguments, or --background for a quiet launch.");
+                return Start(args);
+            }
+            catch (Exception error)
+            {
+                ReportFatal(error, "starting Murmur");
+                return 2;
+            }
+        }
+
+        private static int Start(string[] args)
+        {
             // Global + per-user names: one Murmur per Windows user across RDP/fast-user-switching
             // sessions, because all of them would share the same data folder and Claude profile.
             string user = UserKey();
             bool owned;
             using (Mutex app = new Mutex(true, "Global\\Murmur.App." + user, out owned))
             {
-                if (!owned) return 0; // already running in the tray
+                if (!owned)
+                {
+                    // Ask the running tray to show its status. Never wait, enumerate processes or
+                    // use window messages that could steal focus from the current app.
+                    if (!StartupArguments.IsBackground(args) && !InstanceSignal.TryReveal(user))
+                        MessageBox.Show("Murmur is already running. Look for its waveform icon in the notification area (including hidden icons).", "Murmur");
+                    return 0;
+                }
+                using (InstanceSignal reveal = InstanceSignal.CreateOwner(user))
                 using (Mutex probe = new Mutex(false, "Global\\Murmur.Feasibility.v1." + user))
                 {
                     bool probeFree;
@@ -49,12 +72,68 @@ namespace Murmur.App
                         EnableDpiAwareness();
                         Application.EnableVisualStyles();
                         Application.SetCompatibleTextRenderingDefault(false);
-                        using (TrayApp tray = new TrayApp()) { tray.Start(); Application.Run(); }
-                        return 0;
+                        // Explicit launches confirm the shortcut; login/autostart launches stay quiet.
+                        bool background = StartupArguments.IsBackground(args);
+                        return RunTray(background, reveal);
                     }
                     finally { probe.ReleaseMutex(); }
                 }
             }
+        }
+
+        private static int RunTray(bool background, InstanceSignal reveal)
+        {
+            bool fatal = false;
+            string dataDirectory = DataDirectory();
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += delegate(object sender, ThreadExceptionEventArgs e)
+            {
+                if (fatal) return;
+                fatal = true;
+                string report = StartupFailure.WriteReport(dataDirectory,
+                    StartupFailure.FallbackDirectory(), e.Exception, "UI thread", DateTime.UtcNow);
+                StartupFailure.ShowMessage(StartupFailure.FormatMessage(e.Exception, report, "Murmur stopped unexpectedly."));
+                // Unknown UI state is not safe to continue; leave the message loop after reporting.
+                Application.ExitThread();
+            };
+            AppDomain.CurrentDomain.UnhandledException += delegate(object sender, UnhandledExceptionEventArgs e)
+            {
+                StartupFailure.WriteReport(dataDirectory, StartupFailure.FallbackDirectory(),
+                    e.ExceptionObject as Exception, "background thread", DateTime.UtcNow);
+            };
+
+            using (TrayApp tray = new TrayApp())
+            {
+                tray.Start(background, reveal);
+                Application.Run();
+            }
+            return fatal ? 2 : 0;
+        }
+
+        private static void ReportFatal(Exception error, string stage)
+        {
+            string report = StartupFailure.WriteReport(DataDirectory(),
+                StartupFailure.FallbackDirectory(), error, stage, DateTime.UtcNow);
+            StartupFailure.ShowMessage(StartupFailure.FormatMessage(error, report));
+        }
+
+        private static string CurrentExecutable()
+        {
+            try { return Assembly.GetExecutingAssembly().Location; }
+            catch (Exception) { return null; }
+        }
+
+        private static string DataDirectory()
+        {
+            try
+            {
+                string executable = CurrentExecutable();
+                if (String.IsNullOrEmpty(executable)) return null;
+                string folder = Path.GetDirectoryName(executable);
+                if (String.IsNullOrEmpty(folder)) return null;
+                return Path.Combine(folder, "data", "app");
+            }
+            catch (Exception) { return null; }
         }
 
         internal static string UserKey()
@@ -106,6 +185,11 @@ namespace Murmur.App
         private readonly System.Windows.Forms.Timer _idleTimer;
         private TrayIcon _tray;
         private DictationEngine _engine;
+        private InstanceSignal _reveal;
+        private RegisteredWaitHandle _signalWait;
+        private bool _hotkeyReady;
+        private System.Windows.Forms.Timer _pasteTimer;
+        private IntPtr _pasteWindow;
         // _takeId: engine id of the take in progress (0 = none), from the start press until it is
         // copied, failed, cancelled or discarded. _takeRecording: Claude confirmed listening.
         private int _takeId;
@@ -146,21 +230,67 @@ namespace Murmur.App
             _idleTimer.Tick += delegate { CheckIdle(); };
         }
 
-        public void Start()
+        public void Start(bool background, InstanceSignal reveal)
         {
             _log.Info("Murmur started.");
+            // Program creates the event immediately after acquiring the mutex, before
+            // constructing TrayApp. Early reopens stay queued until this wait is attached.
+            _reveal = reveal;
+            if (_reveal != null)
+            {
+                _signalWait = _reveal.Register(delegate { Post(CheckReveal); });
+            }
             CreateEngine(); // before the tray: the tray builds its menu from engine state
             _tray = new TrayIcon(BuildMenu);
             _tray.SetState(false, "Murmur");
-            if (!_hotkeys.Register(_settings.Hotkey))
-                _tray.Notify("Shortcut unavailable", GlobalHotkeys.Label(_settings.Hotkey) + " is used by another app. Pick another shortcut from the Murmur menu.");
+            _hotkeyReady = _hotkeys.Register(_settings.Hotkey);
+            if (!_hotkeyReady)
+            {
+                _log.Info("Shortcut unavailable: " + GlobalHotkeys.Label(_settings.Hotkey));
+                if (background) _tray.Notify("Shortcut unavailable", GlobalHotkeys.Label(_settings.Hotkey) + " is used by another app. Pick another shortcut from the Murmur menu.");
+            }
             if (!File.Exists(_claudePath))
             {
-                _tray.Notify("Claude Code not found", "Expected " + _claudePath);
+                if (background) _tray.Notify("Claude Code not found", "Expected " + _claudePath);
                 _log.Info("claude.exe not found at the default path.");
             }
             if (_settings.Engine != EngineMode.OnDemand) WarmEngine();
             _idleTimer.Start();
+            // Login/autostart launches stay quiet; an explicit launch confirms the shortcut without
+            // activating or touching the microphone.
+            if (!background) AnnounceLaunch();
+        }
+
+        private void AnnounceLaunch()
+        {
+            if (_tray == null) return;
+            string hint = LaunchHint();
+            _tray.Notify("Murmur is running", hint);
+            ShowLaunchPill(hint);
+        }
+
+        private string LaunchHint()
+        {
+            if (!File.Exists(_claudePath)) return "Claude Code not found - open tray menu";
+            return _hotkeyReady ? GlobalHotkeys.Label(_settings.Hotkey) + " to dictate" : "Shortcut unavailable - use tray menu";
+        }
+
+        private void ShowLaunchPill(string hint)
+        {
+            // Notification banners can be disabled in Windows. The tiny no-activate
+            // pill still confirms an explicit launch without opening the microphone.
+            if (_takeId == 0 && !_overlay.IsShowing)
+                _overlay.ShowMode(_hotkeyReady && File.Exists(_claudePath) ? OverlayMode.Done : OverlayMode.Error, hint);
+        }
+
+        private void CheckReveal()
+        {
+            if (_disposed || _tray == null) return;
+            _log.Info("Another launch asked for tray status.");
+            string status = _engine == null ? "Murmur" : StatusText(_engine.State);
+            _tray.Notify("Murmur is already running",
+                (_hotkeyReady ? GlobalHotkeys.Label(_settings.Hotkey) : "Shortcut unavailable") + " · " + status);
+            ShowLaunchPill(LaunchHint());
         }
 
         private void CreateEngine()
@@ -204,6 +334,7 @@ namespace Murmur.App
 
         private void OnHotkey()
         {
+            CancelPendingPaste();
             _lastActivityUtc = DateTime.UtcNow;
             if (_takeId == 0)
             {
@@ -211,6 +342,7 @@ namespace Murmur.App
                 if (!File.Exists(_claudePath)) { _overlay.ShowMode(OverlayMode.Error, "Claude Code not found"); return; }
                 _takeRecording = false;
                 _stopping = false;
+                _pasteWindow = _settings.AutoPaste ? AutoPaste.CaptureTarget().WindowHandle : IntPtr.Zero;
                 _overlay.ShowMode(OverlayMode.Starting, "");
                 SetCancelKey(true);
                 _takeId = _engine.BeginTake();
@@ -245,6 +377,8 @@ namespace Murmur.App
 
         private void EndTakeUi(bool hideOverlay)
         {
+            CancelPendingPaste();
+            _pasteWindow = IntPtr.Zero;
             _takeId = 0;
             _takeRecording = false;
             _stopping = false;
@@ -253,7 +387,14 @@ namespace Murmur.App
             if (hideOverlay) _overlay.ShowMode(OverlayMode.Hidden, "");
         }
 
-        private void SetCancelKey(bool active) { _hotkeys.SetCancelActive(active && _settings.EscapeCancels); }
+        private void SetCancelKey(bool active)
+        {
+            if (!_hotkeys.SetCancelActive(active && _settings.EscapeCancels) && active && _settings.EscapeCancels)
+            {
+                _log.Info("Esc cancel shortcut unavailable.");
+                if (_tray != null) _tray.Notify("Esc unavailable", "Use Cancel dictation in the Murmur tray menu to discard this take.");
+            }
+        }
 
         private void UnloadIfOnDemand()
         {
@@ -286,24 +427,29 @@ namespace Murmur.App
             // A completion can already be queued on the UI thread when Esc or
             // Restart cancels the take. Reject it before history/clipboard work.
             if (id <= 0 || id != _takeId) return;
+            IntPtr pasteWindow = _pasteWindow;
             _lastActivityUtc = DateTime.UtcNow;
-            bool current = id == _takeId;
-            if (current) EndTakeUi(false);
+            EndTakeUi(false);
             if (_settings.KeepHistory) _history.Add(text);
             else _lastTranscript = text;
             string error;
             if (ClipboardWriter.TrySetText(text, out error))
             {
                 _log.Info("Copied transcript of take " + id + " (" + text.Length + " chars).");
-                if (current || !_overlay.IsShowing) _overlay.ShowMode(OverlayMode.Done, "Copied");
-                if (_settings.AutoPaste && current)
+                _overlay.ShowMode(OverlayMode.Done, "Copied");
+                if (_settings.AutoPaste)
                 {
+                    AutoPasteTarget snapshot = AutoPaste.CaptureTarget();
+                    AutoPasteTarget target = new AutoPasteTarget(pasteWindow, snapshot.ClipboardSequence);
                     System.Windows.Forms.Timer paste = new System.Windows.Forms.Timer();
+                    _pasteTimer = paste;
                     paste.Interval = 120;
                     paste.Tick += delegate {
-                        paste.Stop(); paste.Dispose();
+                        if (_disposed || _pasteTimer != paste) return;
+                        CancelPendingPaste();
+                        if (_takeId != 0 || !_settings.AutoPaste) return;
                         string pasteError;
-                        if (!AutoPaste.TrySendCtrlV(out pasteError)) _log.Info("Auto-paste failed: " + pasteError);
+                        if (!AutoPaste.TrySendToTarget(target, out pasteError)) _log.Info(pasteError);
                     };
                     paste.Start();
                 }
@@ -311,10 +457,17 @@ namespace Murmur.App
             else
             {
                 _log.Info("Clipboard write failed: " + error);
-                if (current || !_overlay.IsShowing) _overlay.ShowMode(OverlayMode.Error, "Couldn't copy - open Recent in the tray menu");
+                _overlay.ShowMode(OverlayMode.Error, "Couldn't copy - open Recent in the tray menu");
                 if (_settings.Sounds) Chimes.Play(Chime.Error);
             }
             UnloadIfOnDemand();
+        }
+
+        private void CancelPendingPaste()
+        {
+            System.Windows.Forms.Timer timer = _pasteTimer;
+            _pasteTimer = null;
+            if (timer != null) { timer.Stop(); timer.Dispose(); }
         }
 
         private void OnTakeFailed(int id, string message)
@@ -374,7 +527,9 @@ namespace Murmur.App
         {
             List<TrayItem> menu = new List<TrayItem>();
             menu.Add(Header("Murmur  ·  " + StatusText(_engine.State)));
-            menu.Add(Header(GlobalHotkeys.Label(_settings.Hotkey) + " to dictate"));
+            menu.Add(Header(_hotkeyReady ? GlobalHotkeys.Label(_settings.Hotkey) + " to dictate" : "Shortcut unavailable - choose another below"));
+            menu.Add(Item(_takeId == 0 ? "Start dictation" : "Stop dictation", OnHotkey));
+            if (_takeId != 0) menu.Add(Item("Cancel dictation", OnCancel));
             menu.Add(Separator());
 
             TrayItem recent = Item("Recent", null);
@@ -462,10 +617,11 @@ namespace Murmur.App
 
         private void ChangeHotkey(HotkeyChoice choice)
         {
-            if (choice == _settings.Hotkey) return;
+            if (choice == _settings.Hotkey && _hotkeyReady) return;
             // Register keeps the previous shortcut active if the new one is taken.
-            if (_hotkeys.Register(choice)) { _settings.Hotkey = choice; Save(); }
-            else _tray.Notify("Shortcut unavailable", GlobalHotkeys.Label(choice) + " is used by another app. Keeping " + GlobalHotkeys.Label(_settings.Hotkey) + ".");
+            if (_hotkeys.Register(choice)) { _hotkeyReady = true; _settings.Hotkey = choice; Save(); }
+            else _tray.Notify("Shortcut unavailable", GlobalHotkeys.Label(choice) + " is used by another app. " +
+                (_hotkeyReady ? "Keeping " + GlobalHotkeys.Label(_settings.Hotkey) + "." : "No shortcut is active; use Start dictation in the tray menu."));
         }
 
         private void ChangeEngine(EngineMode mode)
@@ -615,8 +771,11 @@ namespace Murmur.App
         {
             if (_disposed) return;
             _disposed = true;
+            CancelPendingPaste();
             _overlay.ShowMode(OverlayMode.Hidden, "");
             _idleTimer.Stop(); _idleTimer.Dispose();
+            if (_signalWait != null) { _signalWait.Unregister(null); _signalWait = null; }
+            _reveal = null; // Program owns the event and closes it after the tray is disposed.
             _hotkeys.Dispose();
             _mic.Dispose();
             if (_tray != null) _tray.Dispose(); // icon disappears immediately

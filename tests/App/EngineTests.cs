@@ -41,6 +41,7 @@ namespace Murmur.Tests.App
                 EngineClearWaitTests();
                 EngineExportTimeoutTests();
                 EngineSuspendTests();
+                EngineExportEdgeTests();
                 EngineWriteSafetyTests();
                 Console.WriteLine("PASS: " + _assertions + " engine assertions.");
                 return 0;
@@ -50,6 +51,93 @@ namespace Murmur.Tests.App
                 Console.Error.WriteLine("FAIL: " + error.Message);
                 return 1;
             }
+        }
+
+        private static void EngineExportEdgeTests()
+        {
+            bool holding = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate { if (holding) terminal.SetScreen(ListeningScreen("")); };
+                    terminal.ExportOnCtrlG = true;
+                    terminal.ExportText = "  \r\n ";
+                    terminal.ClearOnExport = true;
+                }))
+            {
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "empty export starts ready");
+                int id = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "empty export records");
+                holding = false;
+                harness.TerminalAt(0).SetScreen(ReadyScreen("visible words"));
+                harness.Engine.EndTake(id);
+                Check(harness.WaitTakeFailure(id, 3000), "empty export reports a failure instead of silent discard");
+                Check(harness.TakeFailureText(id) == "No speech detected", "empty export explains missing text");
+                Check(harness.TakeDiscardCount == 0 && harness.TranscriptCount == 0, "empty export cannot copy or pretend cancel");
+            }
+
+            holding = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session)
+                {
+                    terminal.OnSpace = delegate { if (holding) terminal.SetScreen(ListeningScreen("")); };
+                    terminal.ExportOnCtrlG = true;
+                    terminal.ExportText = "recovered words";
+                    terminal.ClearOnExport = true;
+                }))
+            {
+                harness.Options.NoSpeechMs = 120;
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "redraw starts ready");
+                int id = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "redraw records");
+                holding = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                terminal.SetScreen(UnknownScreen());
+                harness.Engine.EndTake(id);
+                Check(harness.WaitState(EngineState.Finalizing, 1000), "redraw enters finalization");
+                Thread.Sleep(260);
+                Check(harness.Engine.State == EngineState.Finalizing && harness.TakeFailureCount == 0,
+                    "missing composer is not proof of silence");
+                terminal.SetScreen(ReadyScreen("recovered words"));
+                Check(harness.WaitTranscriptCount(1, 3000), "redraw recovers complete transcript");
+                Check(harness.TakeTranscriptText(id) == "recovered words", "redraw preserves recovered text");
+            }
+
+            holding = true;
+            List<FileStream> locks = new List<FileStream>();
+            try
+            {
+                using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                    delegate(FakeTerminal terminal, FakeSession session)
+                    {
+                        terminal.OnSpace = delegate { if (holding) terminal.SetScreen(ListeningScreen("")); };
+                        terminal.ExportOnCtrlG = true;
+                        terminal.ExportText = "discard me";
+                        terminal.ClearOnExport = true;
+                        terminal.OnCtrlG = delegate {
+                            locks.Add(new FileStream(terminal.ExportPath, FileMode.Open, FileAccess.Read, FileShare.Read));
+                        };
+                    }))
+                {
+                    harness.Engine.Warm();
+                    Check(harness.WaitState(EngineState.Ready, 3000), "locked discard starts ready");
+                    int id = harness.Engine.BeginTake();
+                    Check(harness.WaitState(EngineState.Recording, 3000), "locked discard records");
+                    holding = false;
+                    FakeTerminal terminal = harness.TerminalAt(0);
+                    terminal.SetScreen(ReadyScreen("discard me"));
+                    harness.Engine.CancelTake(id);
+                    Check(harness.WaitTakeDiscard(id, 3000), "locked discard ends take");
+                    Check(harness.WaitTerminalCount(2, 3000), "locked discard recycles blocked session");
+                    Check(terminal.IsDisposed, "locked discard closes owned child");
+                    Check(harness.TranscriptCount == 0, "locked discard never delivers text");
+                    CloseAll(locks);
+                }
+            }
+            finally { CloseAll(locks); }
+            Console.WriteLine("PASS: Empty exports, transient composer redraws and locked discard handoffs.");
         }
 
         private static void Check(bool ok, string name)

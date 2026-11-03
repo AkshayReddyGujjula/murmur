@@ -867,7 +867,7 @@ namespace Murmur.App.Engine
             _lastComposer = reading.ComposerText;
             _stableSince = Now();
             _emptySince = -1;
-            if (reading.Kind != ScreenKind.Listening && reading.ComposerText.Length == 0)
+            if (reading.HasComposer && reading.Kind != ScreenKind.Listening && reading.ComposerText.Length == 0)
             {
                 _emptySince = Now();
             }
@@ -877,6 +877,8 @@ namespace Murmur.App.Engine
         private void PollFinalize(int generation)
         {
             ScreenReading reading = ReadScreen();
+            if (reading.Kind == ScreenKind.NeedsSignIn) { FailPrompt(SignInMessage); return; }
+            if (reading.Kind == ScreenKind.NeedsSetup) { FailPrompt(SetupMessage); return; }
             if (reading.Kind == ScreenKind.Listening)
             {
                 _emptySince = -1;
@@ -904,7 +906,7 @@ namespace Murmur.App.Engine
                     return;
                 }
             }
-            else
+            else if (reading.HasComposer)
             {
                 _lastComposer = "";
                 if (_emptySince < 0)
@@ -916,6 +918,13 @@ namespace Murmur.App.Engine
                     FailTake("No speech detected", false);
                     return;
                 }
+            }
+            else
+            {
+                // A missing composer during a redraw says nothing about silence.
+                _emptySince = -1;
+                _lastComposer = "";
+                _stableSince = Now();
             }
 
             if (Now() >= _finalDeadline)
@@ -1015,7 +1024,7 @@ namespace Murmur.App.Engine
                         }
                         else
                         {
-                            EndPipelineTakeDiscarded();
+                            EndPipelineTakeFailure("No speech detected");
                         }
                         if (!deleted)
                         {
@@ -1026,6 +1035,13 @@ namespace Murmur.App.Engine
                         _clearDeadline = Now() + ClearComposerTimeoutMs;
                         _generation++;
                         ArmPoll(_generation);
+                        return;
+                    }
+                    if (!deleted)
+                    {
+                        RaiseDiagnostic("Handoff cleanup incomplete: " + path);
+                        RaiseFailed("Could not remove temporary dictated text; see Murmur logs.");
+                        HandleDiscardExportFailure("Recycled Claude after the discard handoff could not be deleted", false);
                         return;
                     }
                     CompleteDiscard();
@@ -1239,7 +1255,7 @@ namespace Murmur.App.Engine
             _lastComposer = reading.ComposerText;
             _stableSince = Now();
             _emptySince = -1;
-            if (reading.Kind != ScreenKind.Listening && reading.ComposerText.Length == 0)
+            if (reading.HasComposer && reading.Kind != ScreenKind.Listening && reading.ComposerText.Length == 0)
             {
                 _emptySince = Now();
             }
@@ -1258,7 +1274,7 @@ namespace Murmur.App.Engine
             bool listening = reading.Kind == ScreenKind.Listening;
             string text = reading.ComposerText;
 
-            if (!listening && text.Length == 0)
+            if (reading.HasComposer && !listening && text.Length == 0)
             {
                 _lastComposer = "";
                 _stableSince = Now();
@@ -1272,7 +1288,7 @@ namespace Murmur.App.Engine
                     return;
                 }
             }
-            else if (!listening)
+            else if (reading.HasComposer && !listening)
             {
                 _emptySince = -1;
                 if (!string.Equals(text, _lastComposer, StringComparison.Ordinal))

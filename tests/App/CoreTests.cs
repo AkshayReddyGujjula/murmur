@@ -33,9 +33,10 @@ namespace Murmur.Tests.App
                 TestBuildWav();
                 Console.WriteLine("PASS: core settings, history, log, hotkey describe, autostart command, chimes.");
                 TestInputSize();
+                TestAutoPasteGuard();
                 TestDeleteFile(baseDir);
                 TestHotkeyBothIds();
-                Console.WriteLine("PASS: core autopaste input size, history deletefile, hotkey dual ids.");
+                Console.WriteLine("PASS: core autopaste input size, guarded target validation, history deletefile, hotkey dual ids.");
                 return 0;
             }
             catch (Exception error)
@@ -223,7 +224,7 @@ namespace Murmur.Tests.App
         private static void TestCommandFor()
         {
             string command = Autostart.CommandFor("C:\\Tools\\Murmur.exe");
-            Check(command == "\"C:\\Tools\\Murmur.exe\"", "commandfor quoted");
+            Check(command == "\"C:\\Tools\\Murmur.exe\" --background", "autostart command quotes path and launches quietly");
             string empty = Autostart.CommandFor("");
             Check(empty == "\"\"", "commandfor empty");
         }
@@ -270,6 +271,118 @@ namespace Murmur.Tests.App
             System.Reflection.MethodInfo send = typeof(AutoPaste).GetMethod("SendCtrlV");
             Check(send != null, "autopaste sendctrlv kept");
             Check(send.ReturnType == typeof(void), "autopaste sendctrlv void");
+        }
+
+        private static void TestAutoPasteGuard()
+        {
+            IntPtr window = new IntPtr(4242);
+            AutoPasteTarget target = new AutoPasteTarget(window, 7);
+            Check(target.IsCaptured, "autopaste captured target");
+            Check(!new AutoPasteTarget(IntPtr.Zero, 7).IsCaptured, "autopaste zero hwnd not captured");
+
+            string error;
+            Check(AutoPaste.ValidateTarget(target, window, 7, false, out error), "autopaste valid snapshot accepted");
+            Check(error == null, "autopaste valid snapshot no error");
+
+            Check(!AutoPaste.ValidateTarget(new AutoPasteTarget(IntPtr.Zero, 7), IntPtr.Zero, 7, false, out error), "autopaste zero hwnd rejected");
+            Check(error != null, "autopaste zero hwnd error");
+            Check(!AutoPaste.ValidateTarget(target, new IntPtr(99), 7, false, out error), "autopaste changed window rejected");
+            Check(error != null, "autopaste changed window error");
+            Check(!AutoPaste.ValidateTarget(target, window, 8, false, out error), "autopaste changed clipboard rejected");
+            Check(error != null, "autopaste changed clipboard error");
+            Check(!AutoPaste.ValidateTarget(target, window, 7, true, out error), "autopaste held modifier rejected");
+            Check(error != null, "autopaste held modifier error");
+
+            bool injected;
+            Check(RunGuardedAutoPaste(target, window, 7, false, out injected, out error), "autopaste guard delegate accepts valid snapshot");
+            Check(injected, "autopaste guard delegate injects once");
+            Check(error == null, "autopaste guard delegate valid no error");
+
+            Check(!RunGuardedAutoPaste(new AutoPasteTarget(IntPtr.Zero, 7), IntPtr.Zero, 7, false, out injected, out error), "autopaste guard delegate zero hwnd");
+            Check(!injected, "autopaste guard delegate zero hwnd no inject");
+            Check(!RunGuardedAutoPaste(target, new IntPtr(99), 7, false, out injected, out error), "autopaste guard delegate changed window");
+            Check(!injected, "autopaste guard delegate changed window no inject");
+            Check(!RunGuardedAutoPaste(target, window, 8, false, out injected, out error), "autopaste guard delegate changed clipboard");
+            Check(!injected, "autopaste guard delegate changed clipboard no inject");
+            Check(!RunGuardedAutoPaste(target, window, 7, true, out injected, out error), "autopaste guard delegate held modifier");
+            Check(!injected, "autopaste guard delegate held modifier no inject");
+
+            bool injectorCalled = false;
+            bool sent = AutoPaste.TrySendToTarget(
+                target,
+                delegate { return window; },
+                delegate { return 7u; },
+                delegate { return false; },
+                delegate(out string injectError)
+                {
+                    injectorCalled = true;
+                    injectError = "inject failed";
+                    return false;
+                },
+                out error);
+            Check(!sent, "autopaste injector failure returns false");
+            Check(injectorCalled, "autopaste injector failure reached injector");
+            Check(error == "inject failed", "autopaste injector failure error kept");
+
+            injectorCalled = false;
+            sent = AutoPaste.TrySendToTarget(
+                target,
+                ThrowForeground,
+                delegate { return 7u; },
+                delegate { return false; },
+                delegate(out string injectError)
+                {
+                    injectorCalled = true;
+                    injectError = null;
+                    return true;
+                },
+                out error);
+            Check(!sent, "autopaste provider failure returns false");
+            Check(!injectorCalled, "autopaste provider failure no inject");
+            Check(error != null, "autopaste provider failure error");
+
+            Check(!AutoPaste.TrySendToTarget(target, null, null, null, null, out error), "autopaste guard null providers rejected");
+            Check(error != null, "autopaste guard null providers error");
+
+            System.Reflection.MethodInfo capture = typeof(AutoPaste).GetMethod("CaptureTarget");
+            Check(capture != null, "autopaste capture target exists");
+            Check(capture.ReturnType == typeof(AutoPasteTarget), "autopaste capture target returns target");
+            Check(capture.GetParameters().Length == 0, "autopaste capture target takes no args");
+            System.Reflection.MethodInfo guarded = typeof(AutoPaste).GetMethod(
+                "TrySendToTarget",
+                new Type[] { typeof(AutoPasteTarget), typeof(string).MakeByRefType() });
+            Check(guarded != null, "autopaste guarded send exists");
+            Check(guarded.ReturnType == typeof(bool), "autopaste guarded send returns bool");
+        }
+
+        private static bool RunGuardedAutoPaste(
+            AutoPasteTarget target,
+            IntPtr foregroundWindow,
+            uint clipboardSequence,
+            bool modifierKeyHeld,
+            out bool injected,
+            out string error)
+        {
+            bool called = false;
+            bool sent = AutoPaste.TrySendToTarget(
+                target,
+                delegate { return foregroundWindow; },
+                delegate { return clipboardSequence; },
+                delegate { return modifierKeyHeld; },
+                delegate(out string injectError)
+                {
+                    called = true;
+                    injectError = null;
+                    return true;
+                },
+                out error);
+            injected = called;
+            return sent;
+        }
+
+        private static IntPtr ThrowForeground()
+        {
+            throw new InvalidOperationException("foreground lookup failed");
         }
 
         private static void TestDeleteFile(string baseDir)
@@ -332,6 +445,7 @@ namespace Murmur.Tests.App
             {
                 hotkeys.Dispose();
             }
+            Check(!hotkeys.SetCancelActive(true), "disposed hotkey owner reports cancel registration failure");
         }
 
         private static void OnTestPressed()
