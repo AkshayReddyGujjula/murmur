@@ -283,6 +283,9 @@ namespace Murmur.App
 
         private void OnTakeTranscript(int id, string text)
         {
+            // A completion can already be queued on the UI thread when Esc or
+            // Restart cancels the take. Reject it before history/clipboard work.
+            if (id <= 0 || id != _takeId) return;
             _lastActivityUtc = DateTime.UtcNow;
             bool current = id == _takeId;
             if (current) EndTakeUi(false);
