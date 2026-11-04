@@ -200,6 +200,7 @@ namespace Murmur.App.Engine
                 }
                 string line = lines[i];
                 if (Contains(line, "Do you trust") || Contains(line, "Yes, proceed") ||
+                    Contains(line, "Yes, I trust this folder") ||
                     Contains(line, "Choose the text style") || Contains(line, "Press Enter to continue"))
                 {
                     return ScreenKind.NeedsSetup;

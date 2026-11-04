@@ -26,6 +26,7 @@ namespace Murmur.Tests.App
                 CheckInstanceSignal();
                 CheckFailureFormatting();
                 CheckReportWriting();
+                CheckSelfInstall();
                 Console.WriteLine("PASS: Startup argument boundaries, duplicate signaling and error reporting (" + checks + " checks).");
                 return 0;
             }
@@ -33,6 +34,30 @@ namespace Murmur.Tests.App
             {
                 Console.Error.WriteLine("FAIL: " + error.Message);
                 return 1;
+            }
+        }
+
+        private static void CheckSelfInstall()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "murmur-selfinstall-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                string install = Path.Combine(root, "Local", "Murmur");
+                string downloads = Path.Combine(root, "Downloads");
+                string portable = Path.Combine(root, "Portable");
+                string linked = Path.Combine(root, "Linked");
+                Directory.CreateDirectory(install); Directory.CreateDirectory(downloads);
+                Directory.CreateDirectory(Path.Combine(portable, "data")); Directory.CreateDirectory(linked);
+                File.WriteAllText(Path.Combine(linked, "data-location.txt"), @"C:\data");
+                Check(SelfInstall.ShouldInstall(Path.Combine(downloads, "Murmur-Setup.exe"), install), "download folder copy installs itself");
+                Check(!SelfInstall.ShouldInstall(Path.Combine(install, "Murmur.exe"), install), "installed copy runs in place");
+                Check(!SelfInstall.ShouldInstall(Path.Combine(install.ToUpperInvariant(), "Murmur.exe"), install + "\\"), "install folder match ignores case and trailing slash");
+                Check(!SelfInstall.ShouldInstall(Path.Combine(portable, "Murmur.exe"), install), "portable copy beside data runs in place");
+                Check(!SelfInstall.ShouldInstall(Path.Combine(linked, "Murmur.exe"), install), "copy with data-location.txt runs in place");
+            }
+            finally
+            {
+                try { if (Directory.Exists(root)) Directory.Delete(root, true); } catch (Exception) { }
             }
         }
 

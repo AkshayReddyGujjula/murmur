@@ -44,6 +44,7 @@ namespace Murmur.Probe
             ExportPath = Path.Combine(SessionDirectory, "handoff.txt");
             RejectLinks(ProfileDirectory); RejectLinks(Workspace);
             Directory.CreateDirectory(ProfileDirectory); Directory.CreateDirectory(Workspace);
+            SeedNewProfile(ProfileDirectory, Path.GetDirectoryName(SessionDirectory));
             string settings = Path.Combine(SessionDirectory, "settings.json");
             string mcp = Path.Combine(SessionDirectory, "mcp.json");
             File.WriteAllText(settings, "{\"voice\":{\"enabled\":true,\"mode\":\"hold\",\"autoSubmit\":false},\"language\":\"en\",\"editorMode\":\"normal\"}", new UTF8Encoding(false));
@@ -51,6 +52,25 @@ namespace Murmur.Probe
             Arguments = new string[] { "--safe-mode", "--setting-sources", "", "--settings", settings,
                 "--strict-mcp-config", "--mcp-config", mcp, "--tools", "", "--session-id", Guid.NewGuid().ToString() };
             EnvironmentOverrides = EnvironmentForChild(ProfileDirectory, SessionDirectory, ExportPath);
+        }
+
+        // A brand-new owned profile skips Claude's theme picker and folder-trust prompt for
+        // Murmur's own sessions folder (empty workspaces, safe mode, no tools), so a new user
+        // only has to sign in. An existing profile is never modified.
+        internal static void SeedNewProfile(string profileDirectory, string sessionsRoot)
+        {
+            string config = Path.Combine(profileDirectory, ".claude.json");
+            if (File.Exists(config)) return;
+            string trusted = Path.GetFullPath(sessionsRoot).Replace('\\', '/').Replace("\"", "");
+            string json = "{\"hasCompletedOnboarding\":true,\"theme\":\"dark\",\"projects\":{\"" + trusted + "\":{\"hasTrustDialogAccepted\":true}}}";
+            try
+            {
+                using (FileStream file = new FileStream(config, FileMode.CreateNew, FileAccess.Write))
+                {
+                    byte[] bytes = new UTF8Encoding(false).GetBytes(json); file.Write(bytes, 0, bytes.Length);
+                }
+            }
+            catch (IOException) { } // another launch created it first; Claude owns it from here
         }
 
         internal static string DefaultRoot()

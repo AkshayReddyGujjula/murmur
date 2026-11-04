@@ -21,29 +21,42 @@ writeFileSync(join(staging, 'README.txt'), `Murmur ${version} | Windows x64 beta
 
 Ctrl+Space. Speak. Ctrl+Space. Your words are copied.
 
-REQUIREMENTS
-Windows 10 1809 or later, .NET Framework 4.8, a microphone, internet access,
-and a native Claude Code installation with a Claude.ai account that supports voice.
-Murmur currently expects Claude at %USERPROFILE%\\.local\\bin\\claude.exe.
+The easiest download is Murmur-Setup.exe from the releases page below. It is the
+same app as Murmur.exe in this ZIP.
+
+WHAT YOU NEED
+Windows 10 or 11 (64-bit), a microphone, internet access, and a Claude.ai account.
+Voice dictation needs a Claude.ai account sign-in; an API key alone does not work.
+Murmur uses Claude Code. If it is missing, Murmur offers to install it for you
+(expected at %USERPROFILE%\\.local\\bin\\claude.exe).
 
 INSTALL
 1. Extract this entire ZIP to a folder.
-2. Quit any running Murmur from its tray menu.
-3. Open PowerShell in the extracted folder and run:
-   .\\Install.ps1 -Launch
-4. Open the tray menu > Account > Sign in to Claude.
-   Complete Claude's first-time setup if requested.
-5. Click a text field, press Ctrl+Space, wait for the bars, and speak.
+2. Double-click Murmur.exe. If Windows says "Windows protected your PC",
+   click More info, then Run anyway. Murmur is unsigned beta software.
+   Murmur copies itself to %LOCALAPPDATA%\\Murmur, adds a Start menu shortcut
+   and starts. No administrator access is needed.
+3. If asked, choose Install Claude Code (or Not now, then later use
+   Install Claude Code... in the tray menu). Then sign in to your Claude.ai
+   account in the browser that opens. If the browser shows a code, copy it,
+   click the small Murmur sign-in window, right-click to paste, press Enter.
+   The window closes and Murmur says "You're all set!". This is Murmur's own
+   sign-in.
+4. Click a text field, press Ctrl+Space, wait for the bars, and speak.
    Press Ctrl+Space again to finish. Ctrl+V pastes the result.
-   Enable Auto paste in the tray menu to paste automatically.
+   Turn on Auto paste in the tray menu to paste automatically. Esc cancels.
 
-The installer creates a Start menu shortcut. It needs no administrator access.
-Updates preserve existing Murmur data. Fresh installs store data under
-%LOCALAPPDATA%\\Murmur\\data. This ZIP contains no account or transcript data.
+Alternative: open PowerShell in the extracted folder and run
+   .\\Install.ps1 -Launch
 
-Murmur and its installer are unsigned beta software. If local policy prevents
-running a PowerShell script, the extracted Murmur.exe can run directly from a
-normal writable folder; keep that folder in place because its data lives beside it.
+To update, quit Murmur from its tray menu and run the newer download.
+Updates preserve existing Murmur data and sign-in. Fresh installs store data
+under %LOCALAPPDATA%\\Murmur\\data. This ZIP contains no account or transcript data.
+
+If Murmur says Claude needs one-time setup, open the tray menu > Account >
+Run Claude first-time setup. Answer its questions; for the folder question
+choose "Yes, I trust this folder" (press Down, then Enter). When the window
+shows an empty box to type in, just close it.
 
 PRIVACY AND LIMITS
 Claude Code transcribes audio through Anthropic, not locally. Murmur uses its own
@@ -70,4 +83,7 @@ const zipped = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-C
 if (zipped.error) throw zipped.error;
 if (zipped.status !== 0) process.exit(zipped.status || 1);
 writeFileSync(archive + '.sha256', `${digest(archive)}  ${archive.split(/[\\/]/).pop()}\n`);
-console.log(`Packaged ${archive}. Only the executable, installer, readme and checksums are included.`);
+const setup = join(releaseDirectory, 'Murmur-Setup.exe');
+writeFileSync(setup, readFileSync(join(root, 'build', 'Murmur.exe')));
+writeFileSync(setup + '.sha256', `${digest(setup)}  Murmur-Setup.exe\n`);
+console.log(`Packaged ${archive} and ${setup}. Only the executable, installer, readme and checksums are included.`);

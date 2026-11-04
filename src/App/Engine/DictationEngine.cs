@@ -18,8 +18,8 @@ namespace Murmur.App.Engine
         private const int MaxExportBytes = 1048576;
         private const int ExportReadAttempts = 5;
         private const int ExportReadRetryMs = 20;
-        private const string SignInMessage = "Sign in needed \u2014 open the tray menu and choose Sign in";
-        private const string SetupMessage = "Claude needs one-time setup \u2014 choose Sign in from the tray menu";
+        internal const string SignInMessage = "Sign in needed \u2014 open the tray menu and choose Sign in";
+        internal const string SetupMessage = "Claude needs one-time setup \u2014 open the tray menu and choose Account, then Run Claude first-time setup";
         private const string SuspendedMessage = "Finish the Claude sign-in window first";
 
         private readonly EngineOptions _options;

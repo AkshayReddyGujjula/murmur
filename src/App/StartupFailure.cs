@@ -117,6 +117,40 @@ namespace Murmur.App
             }
         }
 
+        // Silent two-button question; true only when the user chooses the first button.
+        public static bool Ask(string text, string yes, string no)
+        {
+            try
+            {
+                using (Form dialog = new Form())
+                using (Label message = new Label())
+                using (Button accept = new Button())
+                using (Button decline = new Button())
+                {
+                    dialog.Text = "Murmur";
+                    dialog.ClientSize = new System.Drawing.Size(520, 200);
+                    dialog.FormBorderStyle = FormBorderStyle.FixedDialog;
+                    dialog.MaximizeBox = false; dialog.MinimizeBox = false;
+                    dialog.StartPosition = FormStartPosition.CenterScreen;
+                    dialog.TopMost = true;
+                    dialog.Font = System.Drawing.SystemFonts.MessageBoxFont;
+                    message.Text = text;
+                    message.SetBounds(16, 16, 488, 130);
+                    accept.Text = yes; accept.DialogResult = DialogResult.Yes;
+                    accept.SetBounds(244, 158, 150, 30);
+                    decline.Text = no; decline.DialogResult = DialogResult.No;
+                    decline.SetBounds(404, 158, 100, 30);
+                    dialog.Controls.Add(message); dialog.Controls.Add(accept); dialog.Controls.Add(decline);
+                    dialog.AcceptButton = accept; dialog.CancelButton = decline;
+                    return dialog.ShowDialog() == DialogResult.Yes;
+                }
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
         private static string BuildReport(Exception error, string stage, DateTime utcNow)
         {
             StringBuilder text = new StringBuilder();

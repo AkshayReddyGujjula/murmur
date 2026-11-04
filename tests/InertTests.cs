@@ -34,6 +34,17 @@ namespace Murmur.Tests
                 if (resolvedRoots != 1 || !fixture.ProfileDirectory.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
                     throw new Exception("Profile test seam did not redirect the constructor.");
                 fixture.CleanupKnownFiles();
+                // A new profile trusts only Murmur's own sessions folder; an existing config is never rewritten.
+                string config = Path.Combine(fixture.ProfileDirectory, ".claude.json");
+                string sessions = Path.GetDirectoryName(fixture.SessionDirectory);
+                string seeded = File.ReadAllText(config);
+                if (seeded.IndexOf("\"" + sessions.Replace('\\', '/') + "\":{\"hasTrustDialogAccepted\":true}", StringComparison.Ordinal) < 0 ||
+                    seeded.IndexOf("\"hasCompletedOnboarding\":true", StringComparison.Ordinal) < 0)
+                    throw new Exception("New profile was not seeded for Murmur's sessions folder.");
+                File.WriteAllText(config, "{}");
+                IsolatedProfile.SeedNewProfile(fixture.ProfileDirectory, sessions);
+                if (File.ReadAllText(config) != "{}") throw new Exception("Existing profile config was rewritten.");
+                File.Delete(config);
                 Directory.Delete(fixture.ProfileDirectory, false);
                 Directory.Delete(Path.GetDirectoryName(fixture.SessionDirectory), false);
                 File.Delete(Path.Combine(root, ".murmur-owned-root")); Directory.Delete(root, false);

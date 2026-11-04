@@ -283,6 +283,9 @@ namespace Murmur.Tests.App
             ScreenReading trust = ScreenParser.Read("Do you trust the files in this folder?\nYes, proceed\n");
             Check(trust.Kind == ScreenKind.NeedsSetup, "trust screen");
 
+            ScreenReading newTrust = ScreenParser.Read(" Quick safety check: Is this a project you created or one you trust?\n\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel\n");
+            Check(newTrust.Kind == ScreenKind.NeedsSetup, "2.1.317+ trust screen");
+
             ScreenReading style = ScreenParser.Read("Choose the text style\n");
             Check(style.Kind == ScreenKind.NeedsSetup, "theme screen");
 
@@ -987,7 +990,7 @@ namespace Murmur.Tests.App
         private static void EnginePromptSafetyTests()
         {
             const string SignIn = "Sign in needed \u2014 open the tray menu and choose Sign in";
-            const string Setup = "Claude needs one-time setup \u2014 choose Sign in from the tray menu";
+            const string Setup = "Claude needs one-time setup \u2014 open the tray menu and choose Account, then Run Claude first-time setup";
 
             using (Harness harness = new Harness(delegate { return ReadyScreen(""); }, null))
             {
@@ -1354,7 +1357,7 @@ namespace Murmur.Tests.App
                 terminal.SetScreen("Do you trust the files in this folder?\nYes, proceed\n");
                 Check(harness.WaitTakeFailure(takeId, 2000), "setup during hold fails take");
                 Check(harness.TakeFailureText(takeId) ==
-                    "Claude needs one-time setup \u2014 choose Sign in from the tray menu",
+                    "Claude needs one-time setup \u2014 open the tray menu and choose Account, then Run Claude first-time setup",
                     "setup hold guard message");
                 Check(harness.WaitState(EngineState.Faulted, 2000), "setup hold guard faults");
                 Check(terminal.IsDisposed, "setup hold guard disposes child");

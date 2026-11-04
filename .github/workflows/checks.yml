@@ -29,5 +29,6 @@ jobs:
           name: Murmur-windows-x64
           path: |
             release/*.zip
+            release/Murmur-Setup.exe
             release/*.sha256
           if-no-files-found: error

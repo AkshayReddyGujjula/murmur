@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Check tag matches VERSION
+        shell: pwsh
+        run: |
+          $version = (Get-Content -Raw VERSION).Trim()
+          $expected = "v$version"
+          if ($env:GITHUB_REF_NAME -ne $expected) {
+            throw "Tag $env:GITHUB_REF_NAME does not match VERSION ($expected)."
+          }
+          "VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Offline checks
+        run: node scripts/build.mjs test
+      - name: Native ConPTY regression
+        run: node scripts/test-conpty.mjs
+      - name: Build release package
+        run: node scripts/package.mjs
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $zip = "release/Murmur-$env:VERSION-windows-x64.zip"
+          $assets = @('release/Murmur-Setup.exe', 'release/Murmur-Setup.exe.sha256', $zip, "$zip.sha256")
+          foreach ($asset in $assets) {
+            if (-not (Test-Path -LiteralPath $asset -PathType Leaf)) { throw "Missing release asset $asset." }
+          }
+          $notes = @"
+          Murmur $env:VERSION for Windows 10 and 11 (64-bit). This is beta software.
+
+          ## Install in 3 steps
+
+          1. Download **Murmur-Setup.exe** below.
+          2. Double-click it. If Windows says "Windows protected your PC", click **More info**, then **Run anyway**. Your browser may also ask you to **Keep** the file.
+          3. Follow Murmur's prompts: it can install Claude Code for you, then opens your browser to sign in to your Claude.ai account. Murmur says "You're all set!" when it's ready.
+
+          Then click into any text box, press **Ctrl+Space**, speak, press **Ctrl+Space** again, and paste with **Ctrl+V**.
+
+          To update, quit Murmur from its tray icon and run the new Murmur-Setup.exe. Your settings and sign-in are kept.
+
+          You need a microphone, internet access and a Claude.ai account. Audio is sent to Anthropic for transcription. Murmur is not affiliated with Anthropic.
+
+          The ZIP contains the same app with a PowerShell installer, for people who prefer it. SHA-256 checksums are attached.
+          "@
+          $notesFile = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          $notes | Out-File -FilePath $notesFile -Encoding utf8
+          gh release create $env:GITHUB_REF_NAME @assets --verify-tag --title "Murmur $env:VERSION" --notes-file $notesFile --latest
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE." }

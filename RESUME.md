@@ -22,13 +22,15 @@ not current instructions to block approved releases or change user permissions.
   their own test child. Real microphone, account and clipboard acceptance is separate
   from offline validation.
 - Release packages must contain only Murmur.exe, Install.ps1, README.txt and
-  SHA256SUMS.txt. Never package data, profiles, history, logs or credentials.
+  SHA256SUMS.txt. A standalone `Murmur-Setup.exe` (the same Murmur.exe bytes) and
+  its `.sha256` are published beside the ZIP. Never package data, profiles,
+  history, logs or credentials.
 
 ## Verification
 
 The release preparation reruns the complete offline suite, the native ConPTY smoke
-regression, build and ZIP manifest/checksum checks. The suite includes 436 engine
-assertions, 389 UI checks and 61 startup checks. One existing reparse fixture may
+regression, build and ZIP manifest/checksum checks. The suite includes 437 engine
+assertions, 389 UI checks and 66 startup checks. One existing reparse fixture may
 be skipped when link creation is unavailable.
 
 The user has exercised the live desktop flow. Offline checks do not establish

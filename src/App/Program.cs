@@ -44,6 +44,7 @@ namespace Murmur.App
         private static int Start(string[] args)
         {
             DesktopAccess.RequireDesktopAccess();
+            if (SelfInstall.Run(args, UserKey())) return 0;
             // Install the desktop binary separately while retaining the existing
             // owned profile/workspace path and its completed Claude setup.
             Murmur.Probe.IsolatedProfile.RootOverride = delegate { return Path.Combine(AppDataLocation.Root, "feasibility-v1"); };
@@ -203,6 +204,9 @@ namespace Murmur.App
         private string _lastTakeFailure;
         private string _lastResultNotice;
         private bool _accountPending, _accountLogin;
+        // First-run guidance: open each account window automatically at most once per launch.
+        private bool _background, _autoSignInTried, _autoSetupTried, _welcomePending;
+        private Process _installProcess;
         private DateTime _lastActivityUtc = DateTime.UtcNow;
         private Process _accountProcess;
         private string _lastTranscript; // in-memory fallback when copying fails and history is off
@@ -248,6 +252,7 @@ namespace Murmur.App
         public void Start(bool background, InstanceSignal reveal)
         {
             _log.Info("Murmur started.");
+            _background = background;
             _log.Info("Desktop integrity level: " + DesktopAccess.IntegrityLevel() + ".");
             // Program creates the event immediately after acquiring the mutex, before
             // constructing TrayApp. Early reopens stay queued until this wait is attached.
@@ -277,7 +282,9 @@ namespace Murmur.App
             {
                 if (background) _tray.Notify("Claude Code not found", "Expected " + _claudePath);
                 _log.Info("claude.exe not found at the default path.");
+                if (!background) Post(OfferClaudeInstall);
             }
+            else if (!background) CheckSignIn();
             if (_settings.Engine != EngineMode.OnDemand) WarmEngine();
             _idleTimer.Start();
             // Login/autostart launches stay quiet; an explicit launch confirms the shortcut without
@@ -442,6 +449,12 @@ namespace Murmur.App
             _log.Info("Engine " + state + ".");
             if (_tray != null) _tray.SetState(state == EngineState.Recording, "Murmur - " + StatusText(state));
             if (state != EngineState.Recording) _mic.Stop();
+            if (state == EngineState.Ready && _welcomePending && _tray != null)
+            {
+                _welcomePending = false;
+                _tray.Notify("You're all set!", "Click into any text box, press " + GlobalHotkeys.Label(_settings.Hotkey) +
+                    ", speak, then press it again. Ctrl+V pastes your words.");
+            }
             if (state == EngineState.Ready && _takeId == 0 && _settings.Engine == EngineMode.OnDemand && _unloadWhenReady)
             {
                 _unloadWhenReady = false;
@@ -588,6 +601,7 @@ namespace Murmur.App
             if (_takeId != 0) return; // reported through TakeFailed
             if (_lastTakeFailure == message) { _lastTakeFailure = null; return; }
             _log.Info("Engine failed: " + message);
+            if (GuideAccountStep(message)) return;
             if (_tray != null) _tray.Notify("Murmur", message);
         }
 
@@ -695,6 +709,8 @@ namespace Murmur.App
             }));
             menu.Add(options);
 
+            if (!File.Exists(_claudePath) && _installProcess == null)
+                menu.Add(Item("Install Claude Code...", delegate { OfferClaudeInstall(); }));
             TrayItem account = Item("Account", null);
             account.Children.Add(Item("Sign in to Claude...", delegate { RequestAccount(true); }));
             account.Children.Add(Item("Run Claude first-time setup...", delegate { RequestAccount(false); }));
@@ -761,6 +777,122 @@ namespace Murmur.App
 
         // Sign-in/setup runs Claude's own console UI against Murmur's separate profile. The engine
         // is suspended first (child closed, starts refused) so the two never share the profile.
+        // Opens the sign-in or setup window the first time Claude reports it is needed in an
+        // explicit launch, after explaining what will happen. Later failures only notify.
+        private bool GuideAccountStep(string message)
+        {
+            if (_background || AccountBusy()) return false;
+            if (message == DictationEngine.SignInMessage && !_autoSignInTried)
+            {
+                _autoSignInTried = true;
+                _welcomePending = true;
+                StartupFailure.ShowMessage("Welcome to Murmur!\r\n\r\n" +
+                    "First, sign in to your Claude account. When you click OK, a small window opens and your web browser asks you to sign in.\r\n\r\n" +
+                    "If the browser shows a code, copy it, click the small window, paste it (right-click) and press Enter.\r\n\r\n" +
+                    "Murmur uses its own separate sign-in, so your other Claude apps aren't affected. Murmur tells you when it's ready.");
+                RequestAccount(true);
+                return true;
+            }
+            if (message == DictationEngine.SetupMessage && !_autoSetupTried)
+            {
+                _autoSetupTried = true;
+                _welcomePending = true;
+                StartupFailure.ShowMessage("Claude needs a quick one-time setup.\r\n\r\n" +
+                    "When you click OK, a window opens. Follow its questions (press Enter to accept). " +
+                    "If it asks whether you trust a folder, press the Down arrow to pick \"Yes, I trust this folder\", then press Enter.\r\n\r\n" +
+                    "When the window shows an empty box to type in, setup is done: just close that window.");
+                RequestAccount(false);
+                return true;
+            }
+            return false;
+        }
+
+        // The composer appears before Claude reports "Not logged in", so readiness alone can't
+        // reveal a missing sign-in. `claude auth status` exits 1 with "loggedIn": false then.
+        private void CheckSignIn()
+        {
+            string claude = _claudePath;
+            ProfileSession created;
+            // Created here, before any engine warm-up, so two threads never initialize a fresh profile at once.
+            try { created = new ProfileSession(); }
+            catch (Exception error) { _log.Error("Sign-in check failed.", error); return; }
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                bool signedOut = false;
+                try
+                {
+                    using (ProfileSession session = created)
+                    {
+                        ProcessStartInfo info = new ProcessStartInfo(claude, "auth status");
+                        info.UseShellExecute = false;
+                        info.CreateNoWindow = true;
+                        info.RedirectStandardOutput = true;
+                        info.WorkingDirectory = session.Workspace;
+                        foreach (KeyValuePair<string, string> entry in session.Environment)
+                            if (entry.Value == null) info.EnvironmentVariables.Remove(entry.Key);
+                            else info.EnvironmentVariables[entry.Key] = entry.Value;
+                        using (Process status = Process.Start(info))
+                        {
+                            System.Threading.Tasks.Task<string> output = status.StandardOutput.ReadToEndAsync();
+                            if (!status.WaitForExit(20000)) { try { status.Kill(); } catch (Exception) { } return; }
+                            signedOut = status.ExitCode != 0 && output.Wait(2000) &&
+                                output.Result.Replace(" ", "").IndexOf("\"loggedIn\":false", StringComparison.Ordinal) >= 0;
+                        }
+                    }
+                }
+                catch (Exception error) { _log.Error("Sign-in check failed.", error); return; }
+                if (signedOut) Post(delegate {
+                    _log.Info("Claude sign-in needed.");
+                    if (!GuideAccountStep(DictationEngine.SignInMessage) && _tray != null)
+                        _tray.Notify("Murmur", DictationEngine.SignInMessage);
+                });
+            });
+        }
+
+        private void OfferClaudeInstall()
+        {
+            if (_disposed || _installProcess != null || File.Exists(_claudePath)) return;
+            if (!StartupFailure.Ask("Murmur uses Claude Code to turn your speech into text, and it isn't installed on this PC yet.\r\n\r\n" +
+                "Install it now? A window opens and runs Anthropic's official installer. It takes about a minute and doesn't need administrator access.",
+                "Install Claude Code", "Not now"))
+            {
+                if (_tray != null) _tray.Notify("Claude Code not installed", "Open the Murmur menu and choose Install Claude Code when you're ready.");
+                return;
+            }
+            try
+            {
+                ProcessStartInfo info = new ProcessStartInfo("powershell.exe",
+                    "-NoProfile -ExecutionPolicy Bypass -Command \"irm https://claude.ai/install.ps1 | iex; " +
+                    "if (-not (Test-Path (Join-Path $env:USERPROFILE '.local\\bin\\claude.exe'))) { Read-Host 'Claude Code did not finish installing. Press Enter to close' }\"");
+                info.UseShellExecute = false;
+                info.CreateNoWindow = false;
+                _installProcess = Process.Start(info);
+                _installProcess.EnableRaisingEvents = true;
+                _installProcess.Exited += delegate { Post(OnClaudeInstallFinished); };
+                _log.Info("Started Claude Code installer.");
+            }
+            catch (Exception error)
+            {
+                _installProcess = null;
+                _log.Error("Could not start the Claude Code installer.", error);
+                StartupFailure.ShowMessage("Murmur couldn't start the Claude Code installer.\r\n\r\nInstall it from https://code.claude.com/docs/en/setup, then reopen Murmur.");
+            }
+        }
+
+        private void OnClaudeInstallFinished()
+        {
+            _installProcess = null;
+            if (File.Exists(_claudePath))
+            {
+                _log.Info("Claude Code installed.");
+                CheckSignIn();
+                WarmEngine();
+                return;
+            }
+            _log.Info("Claude Code installer finished without claude.exe.");
+            StartupFailure.ShowMessage("Claude Code wasn't installed.\r\n\r\nTry again from the Murmur menu (Install Claude Code), or install it from https://code.claude.com/docs/en/setup and reopen Murmur.");
+        }
+
         private void RequestAccount(bool login)
         {
             if (AccountBusy()) return;
@@ -790,7 +922,10 @@ namespace Murmur.App
                 ProcessStartInfo info = new ProcessStartInfo(_claudePath, arguments.ToString());
                 info.UseShellExecute = false;
                 info.CreateNoWindow = false;
-                info.WorkingDirectory = session.Workspace;
+                // Setup runs in the sessions root (sessions\<id>\workspace -> sessions) so the
+                // user's folder-trust choice covers every later per-session workspace.
+                info.WorkingDirectory = _accountLogin ? session.Workspace
+                    : Path.GetDirectoryName(Path.GetDirectoryName(session.Workspace));
                 foreach (KeyValuePair<string, string> entry in session.Environment)
                     if (entry.Value == null) info.EnvironmentVariables.Remove(entry.Key);
                     else info.EnvironmentVariables[entry.Key] = entry.Value;
