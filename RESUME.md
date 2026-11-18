@@ -29,10 +29,16 @@ not current instructions to block approved releases or change user permissions.
 ## Verification
 
 The release preparation reruns the complete offline suite, the native ConPTY smoke
-regression, build and ZIP manifest/checksum checks. The suite includes 437 engine
+regression, build and ZIP manifest/checksum checks. The suite includes 492 engine
 assertions, 389 UI checks and 66 startup checks. One existing reparse fixture may
 be skipped when link creation is unavailable.
 
-The user has exercised the live desktop flow. Offline checks do not establish
+Claude Code 2.1.326 changed how a long prompt scrolls: the top border reads
+"↑ N more" and the prompt glyph leaves the view. ScreenParser accepts both that
+layout and the older one (fixtures `tests/App/fixtures/scrolled-*.txt`). The log
+records the Claude Code version at startup and, when the composer is missing, the
+screen's row structure only. Check those lines first after a CLI update.
+
+The user has exercised the live desktop flow, including a 2+ minute take on 2.1.327. Offline checks do not establish
 recognition accuracy, long continuous recording, real frame pacing, or a guaranteed
 end-to-end latency improvement. Keep those limits visible in the public README.

@@ -153,7 +153,7 @@ Transcription comes from the voice feature included in **Claude Code**, running 
 <summary><strong>Technical requirements and install details</strong></summary>
 
 - Windows 10 1809 or later on x64, with .NET Framework 4.8 (included with Windows 10 version 1903 and later, and Windows 11).
-- A native [Claude Code installation](https://code.claude.com/docs/en/setup) at `%USERPROFILE%\.local\bin\claude.exe`. If it is missing, Murmur offers to run Anthropic's official installer (`irm https://claude.ai/install.ps1 | iex`) in a visible window. Run `claude --version` to check your installation. Compatibility has been exercised with Claude Code **2.1.317**; CLI changes may require a Murmur update.
+- A native [Claude Code installation](https://code.claude.com/docs/en/setup) at `%USERPROFILE%\.local\bin\claude.exe`. If it is missing, Murmur offers to run Anthropic's official installer (`irm https://claude.ai/install.ps1 | iex`) in a visible window. Run `claude --version` to check your installation. Compatibility has been exercised with Claude Code **2.1.327**; CLI changes may require a Murmur update.
 - `Murmur-Setup.exe` is the app itself. When started from anywhere other than `%LOCALAPPDATA%\Murmur`, it copies itself to `%LOCALAPPDATA%\Murmur\Murmur.exe`, creates a Start menu shortcut and starts the installed copy. No administrator access, PowerShell or Node.js is needed. Existing Murmur data is preserved during updates.
 - Each release also has a ZIP containing the same `Murmur.exe`, an `Install.ps1` alternative installer (`.\Install.ps1 -Launch`), a readme and checksums. SHA-256 files are published beside each download.
 - Murmur is unsigned beta software, which is why SmartScreen warns about it. Some development environments label build files as Low integrity, which blocks tray registration and automatic input; installing writes a fresh copy into your normal user app directory and does not change system security settings.
@@ -260,8 +260,8 @@ For details, see [module contracts](docs/APP-CONTRACTS.md), [manual acceptance c
 
 ### Beta status
 
-The current implementation has **437 engine assertions**, **389 UI checks**, and startup, audio, clipboard-guard and handoff coverage. One existing link/reparse fixture is skipped when link creation is unavailable. These are offline checks, not an accuracy benchmark.
+The current implementation has **492 engine assertions**, **389 UI checks**, and startup, audio, clipboard-guard and handoff coverage. One existing link/reparse fixture is skipped when link creation is unavailable. These are offline checks, not an accuracy benchmark.
 
-Short live dictation and the desktop flow have been exercised. Recognition accuracy depends on Claude and the recording environment. Continuous 5–7 minute capture, actual frame pacing and end-to-end latency improvements are not guaranteed. The integration depends on Claude's terminal behavior and may need updates when its CLI changes.
+Short and 2+ minute live dictation and the desktop flow have been exercised. Recognition accuracy depends on Claude and the recording environment. Continuous 5–7 minute capture, actual frame pacing and end-to-end latency improvements are not guaranteed. The integration depends on Claude's terminal behavior and may need updates when its CLI changes.
 
 Murmur is an independent project and is not affiliated with Anthropic. To report an issue, include Windows and Claude Code versions, the affected step, and a sanitized error message. Keep transcripts and account data out of public issue reports.
