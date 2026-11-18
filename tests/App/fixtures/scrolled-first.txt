@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.326
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   ~\workspace
+
+⚠ Safe mode: all customizations are off (CLAUDE.md, skills, plugins, hooks, MCP, agents, and more)
+  Restart without --safe-mode to turn them back on
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+─── ↑ 1 more ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+  failing this is a long dictated sentence about the speech to text app and how it handles very long recordings
+  without failing this is a long dictated sentence about the speech to text app and how it handles very long
+  recordings without failing this is a long dictated sentence about the speech to text app and how it handles very
+  long recordings without failing this is a long dictated sentence about the speech to text app and how it handles
+  very long recordings without failing this is a long dictated sentence about the speech to text app and how it
+  handles very long recordings without failing this is a long dictated sentence about the speech to text app and how
+  it handles very long recordings without failing this is a long dictated sentence about the speech to text app and
+  how it handles very long recordings without failing this is a long dictated sentence about the speech to text app
+  and how it handles very long recordings without failing this is a long dictated sentence about the speech to text
+  app and how it handles very long recordings without failing this is a long dictated sentence about the speech to
+  text app and how it handles very long recordings without failing ththis is a long dictated sentence about the speech
+  to text app and how it handles very long recordingthis is a long dictated sentence about the speech to text app and
+  how it handles very long recordingthis is a long dictated sentence about the speech this is a long dictated
+  sentence about the speech this is a long dictated sentence about the speech this is a long dictated sentence about
+  the speech
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

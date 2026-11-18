@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.325
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   ~\workspace
+
+⚠ Safe mode: all customizations are disabled (CLAUDE.md, skills, plugins, hooks, MCP, agents, and more)
+  Restart without --safe-mode to re-enable
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ recordings without failing this is a long dictated sentence about the speech to text app and how it handles very
+  long recordings without failing this is a long dictated sentence about the speech to text app and how it handles
+  very long recordings without failing this is a long dictated sentence about the speech to text app and how it
+  handles very long recordings without failing this is a long dictated sentence about the speech to text app and how
+  it handles very long recordings without failing this is a long dictated sentence about the speech to text app and
+  how it handles very long rthis is a long dictated sentence about the speech to text app and how it handles very long
+  recordings without failing this is a long dictated sentence about the speech to text app and how it handles very
+  long recordings without failing this is a long dictated sentence about the speech to text app and how it handles
+  very long recordings without failing this is a long dictated sentence about the speech to text app and how it
+  handles very long recordings without failing this is a long dictated sentence about the speech to text app and how
+  it handles very long recordings without failing this is a long dictated sentence about the speech to text app and
+  how it handles very long recordings without failing this is a long dictated sentence about the speech to text app
+  and how it handles very long recordings without failing this is a long dictated sentence about the speech to text
+  app and how it handles very long recordings without failing this is a long dictated sentence about the speech to
+  text app and how it handles very long recordings without failing this is a long dictated sentence about
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

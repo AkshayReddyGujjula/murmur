@@ -136,6 +136,67 @@ namespace Murmur.Tests.App
                 Check(harness.TakeTranscriptText(id) == "recovered words", "redraw preserves recovered text");
             }
 
+            // Claude Code 2.1.326+ scrolls a long prompt: the prompt glyph's line
+            // leaves the view and the top border reads "\u2191 N more". The take must
+            // still settle and export the full text instead of recycling Claude.
+            holding = true;
+            string fullTranscript = LongDictation(2400);
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session) {
+                    terminal.OnSpace = delegate { if (holding) terminal.SetScreen(ListeningScreen("")); };
+                    terminal.ExportOnCtrlG = true;
+                    terminal.ExportText = fullTranscript;
+                    terminal.ClearOnExport = true;
+                }))
+            {
+                harness.Options.StableMs = 40;
+                harness.Options.ScreenUnavailableTimeoutMs = 300;
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "scrolled composer starts ready");
+                int id = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "scrolled composer records");
+                holding = false;
+                harness.TerminalAt(0).SetScreen(ScrolledScreen("\u2191 9 more", "", "the last visible words of a long take"));
+                harness.Engine.EndTake(id);
+                Check(harness.WaitTranscriptCount(1, 3000), "scrolled composer exports");
+                Check(harness.TakeTranscriptText(id) == fullTranscript, "scrolled composer delivers the full export");
+                Check(harness.TakeFailureCount == 0, "scrolled composer is not reported unavailable");
+                Check(harness.WaitState(EngineState.Ready, 3000), "scrolled composer clears back to ready");
+                Check(harness.TerminalCount == 1, "scrolled composer does not recycle Claude");
+            }
+
+            // Only the hidden-line count changes (text above the window grew):
+            // settling must restart instead of exporting a still-changing draft.
+            holding = true;
+            using (Harness harness = new Harness(delegate { return ReadyScreen(""); },
+                delegate(FakeTerminal terminal, FakeSession session) {
+                    terminal.OnSpace = delegate { if (holding) terminal.SetScreen(ListeningScreen("")); };
+                    terminal.ExportOnCtrlG = true;
+                    terminal.ExportText = fullTranscript;
+                    terminal.ClearOnExport = true;
+                }))
+            {
+                harness.Options.StableMs = 500;
+                harness.Engine.Warm();
+                Check(harness.WaitState(EngineState.Ready, 3000), "marker change starts ready");
+                int id = harness.Engine.BeginTake();
+                Check(harness.WaitState(EngineState.Recording, 3000), "marker change records");
+                holding = false;
+                FakeTerminal terminal = harness.TerminalAt(0);
+                string body = "the same visible words";
+                terminal.SetScreen(ScrolledScreen("\u2191 9 more", "", body));
+                Stopwatch clock = Stopwatch.StartNew();
+                harness.Engine.EndTake(id);
+                Thread.Sleep(250);
+                terminal.SetScreen(ScrolledScreen("\u2191 10 more", "", body));
+                Thread.Sleep(Math.Max(0, 600 - (int)clock.ElapsedMilliseconds));
+                Check(!terminal.ContainsWrite("\x07"), "hidden-line change restarts settling");
+                Check(harness.WaitTranscriptCount(1, 3000), "marker change still exports");
+                Check(harness.TakeTranscriptText(id) == fullTranscript, "marker change delivers the full export");
+                Check(harness.WaitState(EngineState.Ready, 3000) && harness.TerminalCount == 1,
+                    "marker change returns ready on the same child");
+            }
+
             foreach (bool cancel in new bool[] { false, true })
             {
                 holding = true;
@@ -160,6 +221,10 @@ namespace Murmur.Tests.App
                         "missing composer is not reported as silence");
                     Check(harness.WaitTerminalCount(2, 1000), "missing composer recycles owned session");
                     Check(harness.TranscriptCount == 0, "missing composer never delivers fabricated text");
+                    string shape = harness.DiagnosticStartingWith("Composer not found on screen: rows=");
+                    Check(shape != null, "missing composer logs the screen structure");
+                    Check(shape != null && shape.IndexOf("starting claude", StringComparison.OrdinalIgnoreCase) < 0,
+                        "missing composer diagnostic never contains screen text");
                 }
             }
 
@@ -243,6 +308,25 @@ namespace Murmur.Tests.App
         private static string UnknownScreen()
         {
             return "starting claude\n";
+        }
+
+        // Claude Code 2.1.326+ layout for a scrolled long prompt (labels may be "").
+        private static string ScrolledScreen(string topLabel, string bottomLabel, string body)
+        {
+            return "working\n" + LabeledRule(topLabel) + "\n  " + body + "\n" +
+                LabeledRule(bottomLabel) + "\n  \u23f5\u23f5 auto mode on (shift+tab to cycle)\n";
+        }
+
+        private static string LabeledRule(string label)
+        {
+            return label.Length == 0 ? Rule : "\u2500\u2500\u2500 " + label + " " + Rule;
+        }
+
+        private static string LongDictation(int length)
+        {
+            StringBuilder builder = new StringBuilder();
+            while (builder.Length < length) builder.Append("a long dictated sentence for murmur ");
+            return builder.ToString(0, length).Trim();
         }
 
         private static void ScreenParserTests()
@@ -346,7 +430,117 @@ namespace Murmur.Tests.App
             Check(multilineSetup.ComposerText == "please run /login and Press Enter to continue",
                 "multiline composer prompt phrases preserved");
 
+            ScrolledScreenParserTests();
             Console.WriteLine("PASS: ScreenParser fixtures and synthetic screens.");
+        }
+
+        private static void ScrolledScreenParserTests()
+        {
+            // Real 120x40 captures. 2.1.325 kept the prompt glyph under a plain
+            // rule when scrolling; 2.1.326+ labels the border and hides the glyph.
+            ScreenReading legacy = ScreenParser.Read(Fixture("scrolled-legacy.txt"));
+            Check(legacy.Kind == ScreenKind.Ready && legacy.HasComposer, "2.1.325 scrolled composer found");
+            Check(legacy.ComposerScrollMarker == "", "2.1.325 scrolled composer has no marker");
+            Check(legacy.ComposerText.StartsWith("recordings without failing", StringComparison.Ordinal),
+                "2.1.325 scrolled composer text");
+
+            ScreenReading first = ScreenParser.Read(Fixture("scrolled-first.txt"));
+            Check(first.Kind == ScreenKind.Ready, "2.1.326 first scrolled frame kind");
+            Check(first.HasComposer, "2.1.326 first scrolled frame composer");
+            Check(first.ComposerScrollMarker == "\u2191 1 more|", "2.1.326 first scrolled frame marker");
+            Check(first.ComposerText.StartsWith("failing this is a long dictated sentence", StringComparison.Ordinal),
+                "2.1.326 first scrolled frame starts at first visible line");
+            Check(first.ComposerText.IndexOf("auto mode", StringComparison.Ordinal) < 0,
+                "2.1.326 scrolled composer excludes footer");
+
+            ScreenReading deep = ScreenParser.Read(Fixture("scrolled-deep.txt"));
+            Check(deep.Kind == ScreenKind.Ready && deep.HasComposer, "2.1.327 deep scrolled composer found");
+            Check(deep.ComposerScrollMarker == "\u2191 25 more|", "2.1.327 deep scrolled marker");
+            Check(deep.ComposerText.Length > 1500, "2.1.327 deep scrolled visible text");
+            Check(ScreenParser.ClaudeVersion(Fixture("scrolled-deep.txt")) == "2.1.327", "banner version parsed");
+            Check(ScreenParser.ClaudeVersion("no banner") == null, "missing banner version is null");
+
+            string described = ScreenParser.Describe(Fixture("scrolled-deep.txt"));
+            Check(described.IndexOf("dictated", StringComparison.Ordinal) < 0 &&
+                described.IndexOf("Claude", StringComparison.Ordinal) < 0, "screen description has no screen text");
+            Check(described.IndexOf("labeled=[22]", StringComparison.Ordinal) >= 0, "screen description finds labeled border");
+
+            // Scrolled dictation is composer text, never a status line.
+            ScreenReading scrolledPhrases = ScreenParser.Read(
+                ScrolledScreen("\u2191 4 more", "", "please run /login, I was listening... Press Enter to continue"));
+            Check(scrolledPhrases.Kind == ScreenKind.Ready, "scrolled dictated status phrases stay ready");
+            Check(scrolledPhrases.ComposerText == "please run /login, I was listening... Press Enter to continue",
+                "scrolled dictated status phrases preserved");
+
+            ScreenReading scrolledListening = ScreenParser.Read(
+                "working\n  listening...\n" + LabeledRule("\u2191 2 more") + "\n  words\n" + Rule + "\n");
+            Check(scrolledListening.Kind == ScreenKind.Listening, "listening status outside scrolled composer");
+
+            // Cursor moved up: the prompt glyph is visible and the bottom is labeled.
+            ScreenReading bottomLabel = ScreenParser.Read(
+                "working\n" + Rule + "\n\u276f first words\n  more words\n" + LabeledRule("\u2193 3 more") + "\n");
+            Check(bottomLabel.HasComposer && bottomLabel.ComposerText == "first words more words",
+                "bottom-labeled composer text");
+            Check(bottomLabel.ComposerScrollMarker == "|\u2193 3 more", "bottom-labeled composer marker");
+
+            ScreenReading both = ScreenParser.Read(ScrolledScreen("\u2191 2 more", "\u2193 1 more", "middle words"));
+            Check(both.HasComposer && both.ComposerText == "middle words", "both-labeled composer text");
+            Check(both.ComposerScrollMarker == "\u2191 2 more|\u2193 1 more", "both-labeled composer marker");
+
+            ScreenReading noBottom = ScreenParser.Read("working\n" + LabeledRule("\u2191 2 more") + "\n  words\n");
+            Check(!noBottom.HasComposer && noBottom.Kind == ScreenKind.Unknown, "labeled border needs a border below");
+
+            ScreenReading notBorder = ScreenParser.Read("working\n  \u2500\u2500 just words\n  more\n");
+            Check(!notBorder.HasComposer, "rule glyphs inside text are not a border");
+
+            // Titled dialog separators are not composer borders: status lines
+            // between them stay visible to sign-in and setup detection.
+            ScreenReading titledSignIn = ScreenParser.Read(
+                "working\n\u2500\u2500 Sign in \u2500\u2500\nNot logged in. Please run /login\n" + Rule + "\n");
+            Check(titledSignIn.Kind == ScreenKind.NeedsSignIn && !titledSignIn.HasComposer,
+                "titled separator around sign-in is not a composer");
+            ScreenReading titledAdjacent = ScreenParser.Read("working\n\u2500\u2500 Sign in \u2500\u2500\n" + Rule + "\n");
+            Check(!titledAdjacent.HasComposer, "adjacent titled separator is not an empty composer");
+            ScreenReading titledTrust = ScreenParser.Read(
+                "\u2500\u2500 Trust 1 \u2500\u2500\nDo you trust the files in this folder?\n" + Rule + "\n");
+            Check(titledTrust.Kind == ScreenKind.NeedsSetup && !titledTrust.HasComposer,
+                "titled separator around trust prompt is not a composer");
+            ScreenReading downAsTop = ScreenParser.Read(
+                "working\n" + LabeledRule("\u2193 2 more") + "\n  Please run /login\n" + Rule + "\n");
+            Check(!downAsTop.HasComposer && downAsTop.Kind == ScreenKind.NeedsSignIn,
+                "a bottom scroll border never starts a composer");
+
+            // A scrolled window that happens to show no words still holds text.
+            ScreenReading blankWindow = ScreenParser.Read(ScrolledScreen("\u2191 3 more", "", ""));
+            Check(blankWindow.HasComposer && blankWindow.ComposerText.Length > 0,
+                "blank scrolled window is not an empty composer");
+            ScreenReading cursorWindow = ScreenParser.Read(ScrolledScreen("\u2191 3 more", "", "\u2581"));
+            Check(cursorWindow.ComposerText.Length > 0, "cursor-only scrolled window is not an empty composer");
+
+            // A dictated line starting with the prompt glyph stays body text.
+            ScreenReading glyphInBody = ScreenParser.Read(
+                "working\n" + LabeledRule("\u2191 5 more") + "\n  please run the numbers\n\u276f and then more words\n" +
+                Rule + "\n");
+            Check(glyphInBody.Kind == ScreenKind.Ready && glyphInBody.HasComposer, "prompt glyph in scrolled body stays ready");
+            Check(glyphInBody.ComposerText.StartsWith("please run the numbers", StringComparison.Ordinal),
+                "prompt glyph in scrolled body keeps the whole body");
+
+            // An indented dictated row of rule glyphs does not end the composer.
+            ScreenReading ruleInBody = ScreenParser.Read(
+                "working\n" + LabeledRule("\u2191 5 more") + "\n  first words\n  \u2500\u2500\n  Please run the numbers\n" +
+                Rule + "\n");
+            Check(ruleInBody.Kind == ScreenKind.Ready && ruleInBody.HasComposer, "indented rule row in body stays ready");
+            Check(ruleInBody.ComposerText.EndsWith("Please run the numbers", StringComparison.Ordinal),
+                "indented rule row keeps the rest of the body");
+
+            // The banner version comes only from above the composer.
+            Check(ScreenParser.ClaudeVersion(ReadyScreen("Claude Code v9.9.9")) == null,
+                "dictated version text is never logged");
+            Check(ScreenParser.ClaudeVersion(ScrolledScreen("\u2191 2 more", "", "Claude Code v9.9.9")) == null,
+                "scrolled dictated version text is never logged");
+
+            Check(ScreenParser.Read(Fixture("ready.txt")).ComposerScrollMarker == "", "unscrolled composer has no marker");
+            Check(ScreenParser.Read(null).ComposerScrollMarker == "", "null screen marker never null");
         }
 
         private static void SessionTests()
@@ -2059,6 +2253,16 @@ namespace Murmur.Tests.App
             public bool HasDiagnostic(string message)
             {
                 lock (_gate) { return _diagnostics.Contains(message); }
+            }
+
+            public string DiagnosticStartingWith(string prefix)
+            {
+                lock (_gate)
+                {
+                    foreach (string message in _diagnostics)
+                        if (message.StartsWith(prefix, StringComparison.Ordinal)) return message;
+                    return null;
+                }
             }
 
             public FakeTerminal TerminalAt(int index)

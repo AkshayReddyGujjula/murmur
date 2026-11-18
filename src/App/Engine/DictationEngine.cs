@@ -707,6 +707,7 @@ namespace Murmur.App.Engine
             ScreenReading reading = ReadScreen();
             if (reading.Kind == ScreenKind.Ready)
             {
+                LogClaudeVersion();
                 SetState(EngineState.Ready);
                 StartPendingTake();
                 return;
@@ -866,7 +867,7 @@ namespace Murmur.App.Engine
             _finalDeadline = Now() + _options.FinalizeTimeoutMs;
 
             ScreenReading reading = ReadScreen();
-            _lastComposer = reading.ComposerText;
+            _lastComposer = ComposerSignature(reading);
             _stableSince = Now();
             _emptySince = -1;
             _missingComposerSince = -1;
@@ -899,9 +900,10 @@ namespace Murmur.App.Engine
             if (text.Length > 0)
             {
                 _emptySince = -1;
-                if (!string.Equals(text, _lastComposer, StringComparison.Ordinal))
+                string signature = ComposerSignature(reading);
+                if (!string.Equals(signature, _lastComposer, StringComparison.Ordinal))
                 {
-                    _lastComposer = text;
+                    _lastComposer = signature;
                     _stableSince = Now();
                 }
                 else if (Now() - _stableSince >= _options.StableMs)
@@ -1097,6 +1099,7 @@ namespace Murmur.App.Engine
             }
             if (_missingComposerSince < 0) _missingComposerSince = Now();
             if (Now() - _missingComposerSince < _options.ScreenUnavailableTimeoutMs) return false;
+            RaiseDiagnostic("Composer not found on screen: " + DescribeScreen());
             if (cancelling) EndPipelineTakeDiscarded();
             else EndPipelineTakeFailure("Claude input became unavailable; try again");
             RecycleChild("Recycled Claude after the composer disappeared");
@@ -1275,7 +1278,7 @@ namespace Murmur.App.Engine
             SetState(EngineState.Finalizing);
 
             ScreenReading reading = ReadScreen();
-            _lastComposer = reading.ComposerText;
+            _lastComposer = ComposerSignature(reading);
             _stableSince = Now();
             _emptySince = -1;
             _missingComposerSince = -1;
@@ -1316,9 +1319,10 @@ namespace Murmur.App.Engine
             else if (reading.HasComposer && !listening)
             {
                 _emptySince = -1;
-                if (!string.Equals(text, _lastComposer, StringComparison.Ordinal))
+                string signature = ComposerSignature(reading);
+                if (!string.Equals(signature, _lastComposer, StringComparison.Ordinal))
                 {
-                    _lastComposer = text;
+                    _lastComposer = signature;
                     _stableSince = Now();
                 }
                 else if (Now() - _stableSince >= _options.StableMs)
@@ -1465,6 +1469,32 @@ namespace Murmur.App.Engine
                 return missing;
             }
             return ScreenParser.Read(screen.Snapshot());
+        }
+
+        // Visible composer text plus Claude's scroll labels: when a long prompt
+        // is scrolled, a change above the visible window still resets settling.
+        private static string ComposerSignature(ScreenReading reading)
+        {
+            string marker = reading.ComposerScrollMarker ?? "";
+            string text = reading.ComposerText ?? "";
+            return marker.Length == 0 ? text : marker + "\n" + text;
+        }
+
+        // Structure only (row numbers of borders and prompts), never screen text.
+        private string DescribeScreen()
+        {
+            TerminalScreen screen = _screen;
+            return screen == null ? "no screen" : ScreenParser.Describe(screen.Snapshot());
+        }
+
+        private void LogClaudeVersion()
+        {
+            TerminalScreen screen = _screen;
+            string version = screen == null ? null : ScreenParser.ClaudeVersion(screen.Snapshot());
+            if (version != null)
+            {
+                RaiseDiagnostic("Claude Code " + version + " ready.");
+            }
         }
 
         private bool WriteSpace()
